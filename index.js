@@ -28,11 +28,28 @@ const {
   AttachmentBuilder,
 } = require("discord.js");
 
+// ================== OPTIONAL LIBS ==================
+let Canvas = null;
+try {
+  Canvas = require("@napi-rs/canvas");
+} catch {
+  Canvas = null;
+  console.log("⚠️ Manca @napi-rs/canvas: welcome banner non verrà generato.");
+}
+
+let discordTranscripts = null;
+try {
+  discordTranscripts = require("discord-html-transcripts");
+} catch {
+  discordTranscripts = null;
+  console.log("⚠️ Installa discord-html-transcripts: npm i discord-html-transcripts");
+}
+
 // ================== CONFIG ==================
 const TOKEN = process.env.DISCORD_TOKEN;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
 const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID; // per registrare slash guild-only
+const GUILD_ID = process.env.GUILD_ID; // per slash guild-only
 
 const PREFIX = process.env.PREFIX || "!";
 const BANNER_URL = process.env.BANNER_URL || process.env.IMAGE_URL || "";
@@ -43,17 +60,26 @@ const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID || null;
 const ALWAYS_OPEN_ROLE_ID = process.env.ALWAYS_OPEN_ROLE_ID || "1463112389296918599";
 const TICKET_CLOSE_ROLE_ID = process.env.TICKET_CLOSE_ROLE_ID || "1461816600733815090";
 const LOG_FOOTER_USER_ID = process.env.LOG_FOOTER_USER_ID || "1387684968536477756";
+
 const TICKET_TITLE_EMOJI = process.env.TICKET_TITLE_EMOJI || "🎫";
 const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/wUuHZUk.png";
 
-// Se hai repliche su host diversi, imposta REDIS_URL e installa ioredis
+// Welcome settings
+const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
+const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
+const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "";     // es: https://i.imgur.com/0F553GO.jpeg
+const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";   // alternativa: ./assets/bg.jpg (se preferisci locale)
+
+// Redis (opzionale, utile se hai repliche su host diversi)
 const REDIS_URL = process.env.REDIS_URL || "";
 
-// ================== CHECK ==================
+// ================== ENV CHECK ==================
 if (!TOKEN) throw new Error("DISCORD_TOKEN mancante nel .env");
 if (!STAFF_ROLE_ID) throw new Error("STAFF_ROLE_ID mancante nel .env");
 if (!CLIENT_ID) throw new Error("CLIENT_ID mancante nel .env");
 if (!GUILD_ID) throw new Error("GUILD_ID mancante nel .env");
+if (!WELCOME_CHANNEL_ID) console.log("⚠️ WELCOME_CHANNEL_ID non impostato: benvenuto non verrà inviato.");
+if (!GOODBYE_CHANNEL_ID) console.log("⚠️ GOODBYE_CHANNEL_ID non impostato: arrivederci non verrà inviato.");
 
 // ================== REDIS OPTIONAL ==================
 let redis = null;
@@ -67,19 +93,17 @@ if (REDIS_URL) {
 }
 
 // ================== DATA DIR (globale macchina) ==================
-// os.tmpdir() è condiviso tra cartelle diverse sullo stesso host
 const BASE_DATA_DIR = path.join(os.tmpdir(), `famiglia-gotti-bot-${CLIENT_ID}`);
 const LOCKS_DIR = path.join(BASE_DATA_DIR, "locks");
-
+const IDEM_DIR = path.join(LOCKS_DIR, "idem");
 const INSTANCE_LOCK_DIR = path.join(LOCKS_DIR, "instance.lockdir");
-const IDEM_DIR = path.join(LOCKS_DIR, "idem"); // per interaction.id (fallback locale)
 
 const PANEL_STATE_FILE = path.join(BASE_DATA_DIR, "panel_state.json");
+
 const TRANSCRIPTS_DIR = path.join(BASE_DATA_DIR, "transcripts");
 const TRANSCRIPTS_INDEX_FILE = path.join(BASE_DATA_DIR, "transcripts_index.json");
 
 const LOCK_TTL_MS = 20_000;
-const INSTANCE_STALE_MS = 10 * 60 * 1000;
 const TRANSCRIPT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function ensureDirsSync() {
@@ -90,19 +114,10 @@ function ensureDirsSync() {
 }
 ensureDirsSync();
 
-// ================== OPTIONAL LIBS ==================
-let discordTranscripts = null;
-try {
-  discordTranscripts = require("discord-html-transcripts");
-} catch {
-  discordTranscripts = null;
-  console.log("⚠️ Installa discord-html-transcripts: npm i discord-html-transcripts");
-}
-
 // ================== LOCK UTILS ==================
 function isPidAlive(pid) {
   try {
-    process.kill(pid, 0); // test esistenza processo (signal 0)
+    process.kill(pid, 0);
     return true;
   } catch {
     return false;
@@ -149,7 +164,6 @@ async function releaseDirLock(lockPath) {
   await fsp.rm(lockPath, { recursive: true, force: true }).catch(() => {});
 }
 
-// ================== GLOBAL LOCK (Redis se disponibile, altrimenti locale) ==================
 async function acquireGlobalLock(key, ttlMs = LOCK_TTL_MS) {
   if (redis) {
     try {
@@ -165,21 +179,16 @@ async function acquireGlobalLock(key, ttlMs = LOCK_TTL_MS) {
   return { ok: lock.ok, release: async () => releaseDirLock(lock.path) };
 }
 
-// ================== SINGLE INSTANCE (nodemon-safe) ==================
 async function acquireInstanceLockOrExit() {
-  // Se lock esiste -> controlla PID: se vivo è davvero doppia istanza; se morto rimuovi.
   if (fs.existsSync(INSTANCE_LOCK_DIR)) {
     const pid = readPidFromLockDir(INSTANCE_LOCK_DIR);
     if (pid && isPidAlive(pid)) {
       console.error(`❌ Doppia istanza sullo stesso host (PID attivo: ${pid}). Stop.`);
       process.exit(1);
     }
-
-    // stale/crash: pulizia
     removeDirSync(INSTANCE_LOCK_DIR);
   }
 
-  // prova a creare
   try {
     fs.mkdirSync(INSTANCE_LOCK_DIR);
     fs.writeFileSync(path.join(INSTANCE_LOCK_DIR, "pid.txt"), String(process.pid));
@@ -188,7 +197,6 @@ async function acquireInstanceLockOrExit() {
     process.exit(1);
   }
 
-  // keepalive mtime
   const keepAlive = setInterval(() => {
     fsp.utimes(INSTANCE_LOCK_DIR, new Date(), new Date()).catch(() => {});
   }, 30_000);
@@ -199,62 +207,33 @@ async function acquireInstanceLockOrExit() {
     removeDirSync(INSTANCE_LOCK_DIR);
   };
 
-  process.on("SIGINT", () => {
-    cleanup();
-    process.exit(0);
-  });
+  process.on("SIGINT", () => { cleanup(); process.exit(0); });
+  process.on("SIGTERM", () => { cleanup(); process.exit(0); });
 
-  process.on("SIGTERM", () => {
-    cleanup();
-    process.exit(0);
-  });
-
-  // nodemon restart: SIGUSR2 -> cleanup -> rilancia SIGUSR2 così nodemon può ripartire
+  // nodemon restart
   process.once("SIGUSR2", () => {
     cleanup();
     process.kill(process.pid, "SIGUSR2");
   });
 
-  // crash -> cleanup
-  process.on("uncaughtException", (e) => {
-    console.error(e);
-    cleanup();
-    process.exit(1);
-  });
-
-  process.on("unhandledRejection", (e) => {
-    console.error(e);
-    cleanup();
-    process.exit(1);
-  });
+  process.on("uncaughtException", (e) => { console.error(e); cleanup(); process.exit(1); });
+  process.on("unhandledRejection", (e) => { console.error(e); cleanup(); process.exit(1); });
 }
 
 // ================== CLIENT ==================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMembers, // necessario per welcome/leave [web:679]
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
 });
 
-// ================== APP STATE ==================
+// ================== STATE ==================
 let transcriptIndex = new Map();
 const closingInProcess = new Set();
-const openingInProcess = new Map(); // userId -> ts
-
-function lockUserOpen(userId, ttlMs = 15_000) {
-  const now = Date.now();
-  const last = openingInProcess.get(userId);
-  if (last && now - last < ttlMs) return false;
-  openingInProcess.set(userId, now);
-  setTimeout(() => {
-    const v = openingInProcess.get(userId);
-    if (v === now) openingInProcess.delete(userId);
-  }, ttlMs).unref?.();
-  return true;
-}
+const openingInProcess = new Map();
 
 // ================== HELPERS ==================
 function isValidHttpUrl(url) {
@@ -343,6 +322,18 @@ function formatRomeHHMM(date = new Date()) {
   }).format(date);
 }
 
+function lockUserOpen(userId, ttlMs = 15_000) {
+  const now = Date.now();
+  const last = openingInProcess.get(userId);
+  if (last && now - last < ttlMs) return false;
+  openingInProcess.set(userId, now);
+  setTimeout(() => {
+    const v = openingInProcess.get(userId);
+    if (v === now) openingInProcess.delete(userId);
+  }, ttlMs).unref?.();
+  return true;
+}
+
 // ================== SUPPORT HOURS ==================
 function minutesNowRome() {
   const parts = new Intl.DateTimeFormat("it-IT", {
@@ -355,6 +346,7 @@ function minutesNowRome() {
   const mm = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
   return hh * 60 + mm;
 }
+
 function weekdayRome() {
   const wd = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Rome", weekday: "short" })
     .format(new Date())
@@ -362,6 +354,7 @@ function weekdayRome() {
   const map = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
   return map[wd] ?? 0;
 }
+
 function isWithinSupportHoursRome() {
   const day = weekdayRome();
   const now = minutesNowRome();
@@ -378,7 +371,196 @@ const CLOSED_MESSAGE =
   "- Domenica: 10:30 - 00:00\n\n" +
   "**Per Aprire Ticket anche al di fuori degli Orari di Supporto Acquista ora l'@&1463112389296918599 a 4,99€ per ottenere assistenza rapida senza tempi di Attesa per qualsiasi tipo di problema o richiesta!**";
 
-// ================== UI: PANEL (Components v2) ==================
+// ================== WELCOME (Canvas banner + Panel UI) ==================
+const CARD_W = 1200;
+const CARD_H = 450;
+
+let cachedBg = null;
+
+async function loadWelcomeBackground() {
+  if (!Canvas) return null;
+  if (cachedBg) return cachedBg;
+
+  const src = (WELCOME_BG_PATH && WELCOME_BG_PATH.trim()) ? WELCOME_BG_PATH.trim() : (WELCOME_BG_URL || "").trim();
+  if (!src) return null;
+
+  try {
+    cachedBg = await Canvas.loadImage(src);
+    return cachedBg;
+  } catch (e) {
+    console.error("❌ Errore loadImage background:", src, e?.message || e);
+    return null;
+  }
+}
+
+function drawCover(ctx, img, x, y, w, h) {
+  const iw = img.width;
+  const ih = img.height;
+  const s = Math.max(w / iw, h / ih);
+  const nw = iw * s;
+  const nh = ih * s;
+  const nx = x + (w - nw) / 2;
+  const ny = y + (h - nh) / 2;
+  ctx.drawImage(img, nx, ny, nw, nh);
+}
+
+function fitFont(ctx, text, maxWidth, startPx, minPx, weight = 900, family = "Sans") {
+  let size = startPx;
+  while (size > minPx) {
+    ctx.font = `${weight} ${size}px ${family}`;
+    if (ctx.measureText(text).width <= maxWidth) return size;
+    size -= 2;
+  }
+  return minPx;
+}
+
+async function renderWelcomeCard(member, mode = "welcome") {
+  if (!Canvas) return null;
+
+  const canvas = Canvas.createCanvas(CARD_W, CARD_H);
+  const ctx = canvas.getContext("2d");
+
+  const bg = await loadWelcomeBackground();
+  if (bg) {
+    drawCover(ctx, bg, 0, 0, CARD_W, CARD_H);
+  } else {
+    const g = ctx.createLinearGradient(0, 0, CARD_W, CARD_H);
+    g.addColorStop(0, "#2a0a0a");
+    g.addColorStop(1, "#12061f");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, CARD_W, CARD_H);
+  }
+
+  // overlay scuro
+  ctx.fillStyle = "rgba(0,0,0,0.42)";
+  ctx.fillRect(0, 0, CARD_W, CARD_H);
+
+  // avatar cerchio (come reference)
+  const avatarUrl = member.user.displayAvatarURL({ extension: "png", size: 256 });
+  let avatar = null;
+  try { avatar = await Canvas.loadImage(avatarUrl); } catch {}
+
+  const cx = CARD_W / 2;
+  const cy = 115;
+  const r = 78;
+
+  // ring bianco
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 10, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.fill();
+
+  // ring interno scuro
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.fill();
+
+  if (avatar) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(avatar, cx - r, cy - r, r * 2, r * 2);
+    ctx.restore();
+  }
+
+  // testo
+  const title = mode === "goodbye" ? "GOODBYE!" : "WELCOME!";
+  const displayName = (member.displayName || member.user.username || "USER").toUpperCase();
+  const memberCount = member.guild?.memberCount ?? 0;
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+
+  // titolo bianco grande
+  ctx.fillStyle = "#ffffff";
+  ctx.shadowColor = "rgba(0,0,0,0.60)";
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 6;
+
+  ctx.font = "900 86px Sans";
+  ctx.fillText(title, cx, 265);
+
+  // nome rosso (tipo screenshot)
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  const nameSize = fitFont(ctx, displayName, 1050, 60, 28, 900, "Sans");
+  ctx.font = `900 ${nameSize}px Sans`;
+  ctx.fillStyle = "#ff2b2b";
+  ctx.fillText(displayName, cx, 330);
+
+  // member count
+  ctx.font = "600 30px Sans";
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillText(`You are the member #${memberCount}`, cx, 382);
+
+  return canvas.toBuffer("image/png");
+}
+
+function buildWelcomePanelComponents({ guildName, userId, fileName, mode }) {
+  const title = mode === "goodbye" ? "Arrivederci" : "Benvenuto";
+  const line = mode === "goodbye"
+    ? `Goodbye <@${userId}>, grazie per essere stato in **${guildName}**.`
+    : `Hello <@${userId}>, welcome to **${guildName}**!`;
+
+  // Provo a far vedere l’immagine *dentro* al container usando attachment://
+  // Se Discord non la renderizza nel container, la vedrai comunque come allegato sotto il messaggio.
+  return [
+    {
+      type: 17,
+      components: [
+        { type: 10, content: `# ${title} • ${guildName}` },
+        { type: 14, divider: false, spacing: 1 },
+        { type: 10, content: line },
+        { type: 14, divider: true, spacing: 2 },
+        { type: 12, items: [{ media: { url: `attachment://${fileName}` } }] },
+        { type: 14, divider: true, spacing: 2 },
+        { type: 10, content: `-# Welcome System` },
+      ],
+    },
+  ];
+}
+
+async function sendWelcomePanel(member, mode = "welcome") {
+  const channelId = mode === "goodbye" ? GOODBYE_CHANNEL_ID : WELCOME_CHANNEL_ID;
+  if (!channelId) return;
+
+  const ch = await member.guild.channels.fetch(channelId).catch(() => null);
+  if (!ch || !ch.isTextBased?.()) return;
+
+  // anti doppio invio (anche se l’evento arriva 2 volte)
+  const lock = await acquireGlobalLock(`welcome:${mode}:${member.guild.id}:${member.id}`, 60_000);
+  if (!lock.ok) return;
+
+  try {
+    const buf = await renderWelcomeCard(member, mode);
+    if (!buf) return;
+
+    const fileName = mode === "goodbye" ? "goodbye.png" : "welcome.png";
+    const file = new AttachmentBuilder(buf, { name: fileName });
+
+    await ch.send({
+      flags: 32768,
+      components: buildWelcomePanelComponents({
+        guildName: member.guild.name,
+        userId: member.id,
+        fileName,
+        mode,
+      }),
+      files: [file],
+      allowedMentions: { users: [member.id], roles: [], repliedUser: false },
+    }).catch(() => {});
+  } finally {
+    await lock.release();
+  }
+}
+
+// ================== PANEL TICKET ==================
 function buildTicketPanelComponents() {
   const inner = [
     { type: 10, content: `# <:icona_ticket:1467182266554908953> Famiglia Gotti – Ticket Fazione` },
@@ -406,7 +588,6 @@ function buildTicketPanelComponents() {
   return [{ type: 17, components: inner }];
 }
 
-// ================== PANEL STATE (edit first) ==================
 async function loadPanelState() {
   try {
     const raw = await fsp.readFile(PANEL_STATE_FILE, "utf8");
@@ -416,9 +597,11 @@ async function loadPanelState() {
     return {};
   }
 }
+
 async function savePanelState(obj) {
   await fsp.writeFile(PANEL_STATE_FILE, JSON.stringify(obj, null, 2), "utf8").catch(() => {});
 }
+
 async function getPanelMessageId(guildId, channelId) {
   const key = `panel:${guildId}:${channelId}`;
   if (redis) {
@@ -430,6 +613,7 @@ async function getPanelMessageId(guildId, channelId) {
   const state = await loadPanelState();
   return state[key] || null;
 }
+
 async function setPanelMessageId(guildId, channelId, messageId) {
   const key = `panel:${guildId}:${channelId}`;
   if (redis) {
@@ -471,7 +655,7 @@ async function upsertTicketPanel(channel) {
   }
 }
 
-// ================== TICKET WELCOME ==================
+// ================== TICKET WELCOME (nel canale ticket) ==================
 function buildTicketWelcomeEmbed() {
   return new EmbedBuilder()
     .setTitle("Benvenuto nel Sistema Ticket della Famiglia Gotti <:icona_ticket:1467182266554908953>")
@@ -486,11 +670,7 @@ function buildCloseButtonRow() {
 }
 
 async function pinAndCleanupPinSystemMessage(msg) {
-  try {
-    await msg.pin("Ticket header");
-  } catch {
-    return;
-  }
+  try { await msg.pin("Ticket header"); } catch { return; }
   try {
     const recent = await msg.channel.messages.fetch({ limit: 5 });
     const sysPin = recent.find((m) => m.type === MessageType.ChannelPinnedMessage);
@@ -554,7 +734,7 @@ function makeToken() {
   return crypto.randomBytes(8).toString("hex");
 }
 
-// ================== LOG SEND (only on close) ==================
+// ================== LOG SEND ==================
 async function getLogChannel(guild) {
   const ch = await guild.channels.fetch(TICKET_LOG_CHANNEL_ID).catch(() => null);
   if (!ch) return null;
@@ -713,7 +893,7 @@ async function createTicketChannel(interaction, ticketType) {
   }
 }
 
-// ================== SLASH COMMANDS REG ==================
+// ================== SLASH COMMANDS ==================
 const commands = [
   new SlashCommandBuilder().setName("ticketpanel").setDescription("Invia/aggiorna il pannello ticket (senza duplicati)"),
 ].map((c) => c.toJSON());
@@ -728,7 +908,22 @@ function bindEventsOnce() {
   if (global.__FG_BOUND) return;
   global.__FG_BOUND = true;
 
-  // prefix commands
+  client.on("guildMemberAdd", async (member) => {
+    try {
+      await sendWelcomePanel(member, "welcome");
+    } catch (e) {
+      console.error(e);
+    }
+  });
+
+  client.on("guildMemberRemove", async (member) => {
+    try {
+      await sendWelcomePanel(member, "goodbye");
+    } catch (e) {
+      console.error(e);
+    }
+  });
+
   client.on("messageCreate", async (msg) => {
     try {
       if (!msg.guild || msg.author.bot) return;
@@ -762,17 +957,15 @@ function bindEventsOnce() {
           closedById: msg.author.id,
           reason: reason || "Chiuso tramite !chiudi",
         });
-        return;
       }
     } catch (e) {
       console.error(e);
     }
   });
 
-  // interactions
   client.on("interactionCreate", async (interaction) => {
     try {
-      // IDempotenza: se la stessa interaction viene gestita 2 volte, la seconda esce
+      // Idempotenza: se Discord consegna la stessa interaction 2 volte, la seconda viene ignorata
       const idem = await acquireGlobalLock(`ix:${interaction.id}`, 20_000);
       if (!idem.ok) return;
 
@@ -814,6 +1007,7 @@ function bindEventsOnce() {
           await interaction.reply({ content: "Valido solo nei canali ticket.", flags: MessageFlags.Ephemeral }).catch(() => {});
           return;
         }
+
         if (!canCloseTicketFromInteraction(interaction)) {
           await interaction.reply({ content: "Non hai permessi.", flags: MessageFlags.Ephemeral }).catch(() => {});
           return;
@@ -872,7 +1066,6 @@ function bindEventsOnce() {
           return;
         }
         await interaction.showModal(buildCloseReasonModal(interaction.channel.id));
-        return;
       }
     } catch (err) {
       console.error(err);
@@ -883,9 +1076,7 @@ function bindEventsOnce() {
 // ================== READY ==================
 client.once("ready", async () => {
   console.log(`Online: ${client.user.tag}`);
-  console.log("PID:", process.pid);
-  console.log("interactionCreate listeners:", client.listenerCount("interactionCreate"));
-  console.log("messageCreate listeners:", client.listenerCount("messageCreate"));
+  console.log("⚙️ Ricorda: per welcome serve Server Members Intent nel Developer Portal e GuildMembers intent nel codice.");
 });
 
 // ================== START ==================
