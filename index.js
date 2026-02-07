@@ -72,7 +72,7 @@ const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
 const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://imgur.com/0F553GO";
 const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";
 
-// Font: user-provided ttf dentro la repo
+// Font: file ttf dentro repo
 const WELCOME_FONT_FAMILY = process.env.WELCOME_FONT_FAMILY || "Lexend";
 
 // Redis (opzionale)
@@ -414,7 +414,7 @@ const CLOSED_MESSAGE =
   "- Domenica: 10:30 - 00:00\n\n" +
   `**Per Aprire Ticket anche al di fuori degli Orari di Supporto Acquista ora l'@&${ALWAYS_OPEN_ROLE_ID} a 4,99€ per ottenere assistenza rapida senza tempi di Attesa per qualsiasi tipo di problema o richiesta!**`;
 
-// ================== FONT REGISTER (FIX RAILWAY) ==================
+// ================== FONT REGISTER (RAILWAY FIX) ==================
 let __FONT_DONE = false;
 
 function registerWelcomeFontOnce() {
@@ -426,13 +426,15 @@ function registerWelcomeFontOnce() {
     return;
   }
 
-  // se già registrato, stop
+  // già registrato
   if (Canvas.GlobalFonts.has?.(WELCOME_FONT_FAMILY)) return;
 
+  // metti il font nella repo in uno di questi path
   const candidates = [
     path.join(__dirname, "static", "Lexend-VariableFont_wght.ttf"),
     path.join(__dirname, "Lexend-VariableFont_wght.ttf"),
     path.join(__dirname, "static", "fonts", "Lexend-VariableFont_wght.ttf"),
+    path.join(__dirname, "assets", "fonts", "Lexend-VariableFont_wght.ttf"),
   ];
 
   for (const p of candidates) {
@@ -447,12 +449,13 @@ function registerWelcomeFontOnce() {
     }
   }
 
-  console.log("❌ Font non trovato. Metti Lexend-VariableFont_wght.ttf in /static oppure in root.");
+  console.log("❌ Font non trovato. Metti Lexend-VariableFont_wght.ttf in /static oppure /assets/fonts oppure root.");
 }
 
 // ================== WELCOME CARD (Canvas) ==================
+// ✅ 16:9 per evitare effetto schiacciato nella preview Discord
 const CARD_W = 1200;
-const CARD_H = 450;
+const CARD_H = 675;
 
 let cachedWelcomeBg = null;
 
@@ -528,10 +531,18 @@ function drawCenteredText(ctx, text, x, y, font, fill, stroke, strokeW, shadow =
   ctx.restore();
 }
 
+async function getFreshMemberCount(guild) {
+  let count = guild?.memberCount ?? 0;
+  try {
+    const fresh = await guild.fetch();
+    if (typeof fresh?.memberCount === "number") count = fresh.memberCount;
+  } catch {}
+  return count;
+}
+
 async function renderWelcomeCard(member, mode = "welcome") {
   if (!Canvas) return null;
 
-  // ✅ importantissimo: registra font prima di fillText()
   registerWelcomeFontOnce();
 
   const canvas = Canvas.createCanvas(CARD_W, CARD_H);
@@ -548,25 +559,27 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.fillRect(0, 0, CARD_W, CARD_H);
   }
 
+  // overlay leggero per leggibilità testo
   ctx.fillStyle = "rgba(0,0,0,0.18)";
   ctx.fillRect(0, 0, CARD_W, CARD_H);
 
+  // avatar
   const avatarUrl = member.user.displayAvatarURL({ extension: "png", size: 256 });
   let avatar = null;
   try { avatar = await Canvas.loadImage(avatarUrl); } catch {}
 
   const cx = CARD_W / 2;
-  const cy = 115;
-  const r = 78;
+  const cy = 170; // più giù (16:9)
+  const r = 84;
 
   ctx.beginPath();
-  ctx.arc(cx, cy, r + 10, 0, Math.PI * 2);
+  ctx.arc(cx, cy, r + 12, 0, Math.PI * 2);
   ctx.closePath();
   ctx.fillStyle = "rgba(255,255,255,0.95)";
   ctx.fill();
 
   ctx.beginPath();
-  ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
+  ctx.arc(cx, cy, r + 4, 0, Math.PI * 2);
   ctx.closePath();
   ctx.fillStyle = "rgba(0,0,0,0.32)";
   ctx.fill();
@@ -581,30 +594,36 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.restore();
   }
 
-  const title = mode === "goodbye" ? "GOODBYE!" : "WELCOME!";
-  const name = (member.displayName || member.user.username || "USER").toUpperCase();
-  const memberCount = member.guild?.memberCount ?? 0;
+  // testi in italiano
+  const isGoodbye = mode === "goodbye";
+  const title = isGoodbye ? "ARRIVEDERCI!" : "BENVENUTO!";
+  const name = (member.displayName || member.user.username || "UTENTE").toUpperCase();
+
+  const memberCount = await getFreshMemberCount(member.guild);
+  const countLine = `Sei il membro #${memberCount}`;
 
   const family = WELCOME_FONT_FAMILY || "sans-serif";
 
+  // Titolo
   drawCenteredText(
     ctx,
     title,
     cx,
-    265,
-    `900 86px "${family}"`,
+    395,
+    `900 92px "${family}"`,
     "#ffffff",
     "rgba(0,0,0,0.45)",
     8,
     true
   );
 
-  const nameSize = fitFont(ctx, name, 1050, 64, 28, 900, family);
+  // Nome rosso
+  const nameSize = fitFont(ctx, name, 1080, 72, 28, 900, family);
   drawCenteredText(
     ctx,
     name,
     cx,
-    330,
+    475,
     `900 ${nameSize}px "${family}"`,
     "#ff2b2b",
     "rgba(0,0,0,0.50)",
@@ -612,12 +631,13 @@ async function renderWelcomeCard(member, mode = "welcome") {
     true
   );
 
+  // Count
   drawCenteredText(
     ctx,
-    `You are the member #${memberCount}`,
+    countLine,
     cx,
-    382,
-    `700 30px "${family}"`,
+    545,
+    `700 34px "${family}"`,
     "rgba(255,255,255,0.88)",
     "rgba(0,0,0,0.35)",
     5,
@@ -631,7 +651,7 @@ async function renderWelcomeCard(member, mode = "welcome") {
 function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
   const title = mode === "goodbye" ? `Arrivederci • ${guildName}` : `Benvenuto • ${guildName}`;
   const line = mode === "goodbye"
-    ? `Ciao <@${userId}>, grazie per essere stato in **${guildName}**!`
+    ? `Ciao <@${userId}>, a presto su **${guildName}**!`
     : `Ciao <@${userId}>, benvenuto in **${guildName}**!`;
 
   return [
