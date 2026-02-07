@@ -8,6 +8,7 @@ const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
 
+const djs = require("discord.js");
 const {
   Client,
   GatewayIntentBits,
@@ -17,16 +18,25 @@ const {
   Routes,
   SlashCommandBuilder,
   MessageFlags,
+  MessageType,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  MessageType,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
   AttachmentBuilder,
-} = require("discord.js");
+} = djs;
+
+// Components V2 builders (se presenti nella tua versione)
+const {
+  ContainerBuilder,
+  TextDisplayBuilder,
+  SeparatorBuilder,
+  MediaGalleryBuilder,
+  MediaGalleryItemBuilder,
+} = djs;
 
 // ================== OPTIONAL LIBS ==================
 let Canvas = null;
@@ -34,7 +44,7 @@ try {
   Canvas = require("@napi-rs/canvas");
 } catch {
   Canvas = null;
-  console.log("⚠️ Manca @napi-rs/canvas: welcome banner non verrà generato.");
+  console.log("⚠️ Manca @napi-rs/canvas: la card welcome non verrà generata.");
 }
 
 let discordTranscripts = null;
@@ -49,7 +59,7 @@ try {
 const TOKEN = process.env.DISCORD_TOKEN;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
 const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID; // per slash guild-only
+const GUILD_ID = process.env.GUILD_ID;
 
 const PREFIX = process.env.PREFIX || "!";
 const BANNER_URL = process.env.BANNER_URL || process.env.IMAGE_URL || "";
@@ -64,22 +74,20 @@ const LOG_FOOTER_USER_ID = process.env.LOG_FOOTER_USER_ID || "138768496853647775
 const TICKET_TITLE_EMOJI = process.env.TICKET_TITLE_EMOJI || "🎫";
 const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/wUuHZUk.png";
 
-// Welcome settings
+// Welcome
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
-const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "";     // es: https://i.imgur.com/0F553GO.jpeg
-const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";   // alternativa: ./assets/bg.jpg (se preferisci locale)
+const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://i.imgur.com/0F553GO.jpeg"; // tua immagine
+const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || ""; // alternativa locale
 
-// Redis (opzionale, utile se hai repliche su host diversi)
+// Redis (opzionale)
 const REDIS_URL = process.env.REDIS_URL || "";
 
-// ================== ENV CHECK ==================
+// ================== CHECK ==================
 if (!TOKEN) throw new Error("DISCORD_TOKEN mancante nel .env");
 if (!STAFF_ROLE_ID) throw new Error("STAFF_ROLE_ID mancante nel .env");
 if (!CLIENT_ID) throw new Error("CLIENT_ID mancante nel .env");
 if (!GUILD_ID) throw new Error("GUILD_ID mancante nel .env");
-if (!WELCOME_CHANNEL_ID) console.log("⚠️ WELCOME_CHANNEL_ID non impostato: benvenuto non verrà inviato.");
-if (!GOODBYE_CHANNEL_ID) console.log("⚠️ GOODBYE_CHANNEL_ID non impostato: arrivederci non verrà inviato.");
 
 // ================== REDIS OPTIONAL ==================
 let redis = null;
@@ -99,7 +107,6 @@ const IDEM_DIR = path.join(LOCKS_DIR, "idem");
 const INSTANCE_LOCK_DIR = path.join(LOCKS_DIR, "instance.lockdir");
 
 const PANEL_STATE_FILE = path.join(BASE_DATA_DIR, "panel_state.json");
-
 const TRANSCRIPTS_DIR = path.join(BASE_DATA_DIR, "transcripts");
 const TRANSCRIPTS_INDEX_FILE = path.join(BASE_DATA_DIR, "transcripts_index.json");
 
@@ -116,12 +123,7 @@ ensureDirsSync();
 
 // ================== LOCK UTILS ==================
 function isPidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
 function readPidFromLockDir(lockDir) {
@@ -129,15 +131,11 @@ function readPidFromLockDir(lockDir) {
     const p = fs.readFileSync(path.join(lockDir, "pid.txt"), "utf8").trim();
     const pid = Number(p);
     return Number.isFinite(pid) ? pid : null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 function removeDirSync(p) {
-  try {
-    fs.rmSync(p, { recursive: true, force: true });
-  } catch {}
+  try { fs.rmSync(p, { recursive: true, force: true }); } catch {}
 }
 
 async function acquireDirLock(baseDir, key, ttlMs = LOCK_TTL_MS) {
@@ -170,15 +168,13 @@ async function acquireGlobalLock(key, ttlMs = LOCK_TTL_MS) {
       if (redis.status !== "ready") await redis.connect().catch(() => {});
       const ok = await redis.set(`lock:${key}`, String(process.pid), "PX", ttlMs, "NX");
       return { ok: ok === "OK", release: async () => {} };
-    } catch {
-      // fallback locale
-    }
+    } catch {}
   }
-
   const lock = await acquireDirLock(IDEM_DIR, key, ttlMs);
   return { ok: lock.ok, release: async () => releaseDirLock(lock.path) };
 }
 
+// ================== SINGLE INSTANCE (nodemon-safe) ==================
 async function acquireInstanceLockOrExit() {
   if (fs.existsSync(INSTANCE_LOCK_DIR)) {
     const pid = readPidFromLockDir(INSTANCE_LOCK_DIR);
@@ -210,7 +206,6 @@ async function acquireInstanceLockOrExit() {
   process.on("SIGINT", () => { cleanup(); process.exit(0); });
   process.on("SIGTERM", () => { cleanup(); process.exit(0); });
 
-  // nodemon restart
   process.once("SIGUSR2", () => {
     cleanup();
     process.kill(process.pid, "SIGUSR2");
@@ -224,7 +219,7 @@ async function acquireInstanceLockOrExit() {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers, // necessario per welcome/leave [web:679]
+    GatewayIntentBits.GuildMembers, // welcome/leave [web:679]
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -346,7 +341,6 @@ function minutesNowRome() {
   const mm = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
   return hh * 60 + mm;
 }
-
 function weekdayRome() {
   const wd = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Rome", weekday: "short" })
     .format(new Date())
@@ -354,7 +348,6 @@ function weekdayRome() {
   const map = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
   return map[wd] ?? 0;
 }
-
 function isWithinSupportHoursRome() {
   const day = weekdayRome();
   const now = minutesNowRome();
@@ -369,24 +362,23 @@ const CLOSED_MESSAGE =
   "- Lunedì - Venerdì: 12:00 - 00:00\n" +
   "- Sabato: 10:30 - 01:30\n" +
   "- Domenica: 10:30 - 00:00\n\n" +
-  "**Per Aprire Ticket anche al di fuori degli Orari di Supporto Acquista ora l'@&1463112389296918599 a 4,99€ per ottenere assistenza rapida senza tempi di Attesa per qualsiasi tipo di problema o richiesta!**";
+  `**Per Aprire Ticket anche al di fuori degli Orari di Supporto Acquista ora l'@&${ALWAYS_OPEN_ROLE_ID} a 4,99€ per ottenere assistenza rapida senza tempi di Attesa per qualsiasi tipo di problema o richiesta!**`;
 
-// ================== WELCOME (Canvas banner + Panel UI) ==================
+// ================== WELCOME CARD (Canvas) ==================
 const CARD_W = 1200;
 const CARD_H = 450;
 
-let cachedBg = null;
-
+let cachedWelcomeBg = null;
 async function loadWelcomeBackground() {
   if (!Canvas) return null;
-  if (cachedBg) return cachedBg;
+  if (cachedWelcomeBg) return cachedWelcomeBg;
 
   const src = (WELCOME_BG_PATH && WELCOME_BG_PATH.trim()) ? WELCOME_BG_PATH.trim() : (WELCOME_BG_URL || "").trim();
   if (!src) return null;
 
   try {
-    cachedBg = await Canvas.loadImage(src);
-    return cachedBg;
+    cachedWelcomeBg = await Canvas.loadImage(src);
+    return cachedWelcomeBg;
   } catch (e) {
     console.error("❌ Errore loadImage background:", src, e?.message || e);
     return null;
@@ -431,11 +423,11 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.fillRect(0, 0, CARD_W, CARD_H);
   }
 
-  // overlay scuro
+  // overlay
   ctx.fillStyle = "rgba(0,0,0,0.42)";
   ctx.fillRect(0, 0, CARD_W, CARD_H);
 
-  // avatar cerchio (come reference)
+  // avatar
   const avatarUrl = member.user.displayAvatarURL({ extension: "png", size: 256 });
   let avatar = null;
   try { avatar = await Canvas.loadImage(avatarUrl); } catch {}
@@ -444,14 +436,12 @@ async function renderWelcomeCard(member, mode = "welcome") {
   const cy = 115;
   const r = 78;
 
-  // ring bianco
   ctx.beginPath();
   ctx.arc(cx, cy, r + 10, 0, Math.PI * 2);
   ctx.closePath();
   ctx.fillStyle = "rgba(255,255,255,0.95)";
   ctx.fill();
 
-  // ring interno scuro
   ctx.beginPath();
   ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
   ctx.closePath();
@@ -468,33 +458,30 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.restore();
   }
 
-  // testo
+  // testi come tua reference
   const title = mode === "goodbye" ? "GOODBYE!" : "WELCOME!";
-  const displayName = (member.displayName || member.user.username || "USER").toUpperCase();
+  const rawName = (member.displayName || member.user.username || "USER").toUpperCase();
+  const nameLine = `.${rawName}..`; // stile .SHELL..
   const memberCount = member.guild?.memberCount ?? 0;
 
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
 
-  // titolo bianco grande
   ctx.fillStyle = "#ffffff";
   ctx.shadowColor = "rgba(0,0,0,0.60)";
   ctx.shadowBlur = 18;
   ctx.shadowOffsetY = 6;
-
   ctx.font = "900 86px Sans";
   ctx.fillText(title, cx, 265);
 
-  // nome rosso (tipo screenshot)
   ctx.shadowBlur = 0;
   ctx.shadowOffsetY = 0;
 
-  const nameSize = fitFont(ctx, displayName, 1050, 60, 28, 900, "Sans");
+  const nameSize = fitFont(ctx, nameLine, 1050, 60, 28, 900, "Sans");
   ctx.font = `900 ${nameSize}px Sans`;
   ctx.fillStyle = "#ff2b2b";
-  ctx.fillText(displayName, cx, 330);
+  ctx.fillText(nameLine, cx, 330);
 
-  // member count
   ctx.font = "600 30px Sans";
   ctx.fillStyle = "rgba(255,255,255,0.85)";
   ctx.fillText(`You are the member #${memberCount}`, cx, 382);
@@ -502,23 +489,48 @@ async function renderWelcomeCard(member, mode = "welcome") {
   return canvas.toBuffer("image/png");
 }
 
-function buildWelcomePanelComponents({ guildName, userId, fileName, mode }) {
-  const title = mode === "goodbye" ? "Arrivederci" : "Benvenuto";
+// ================== WELCOME MESSAGE (Components V2) ==================
+function buildWelcomeContainer({ guildName, userId, mode, fileName }) {
+  const title = mode === "goodbye" ? `Arrivederci • ${guildName}` : `Benvenuto • ${guildName}`;
   const line = mode === "goodbye"
     ? `Goodbye <@${userId}>, grazie per essere stato in **${guildName}**.`
     : `Hello <@${userId}>, welcome to **${guildName}**!`;
 
-  // Provo a far vedere l’immagine *dentro* al container usando attachment://
-  // Se Discord non la renderizza nel container, la vedrai comunque come allegato sotto il messaggio.
+  const canUseBuilders =
+    ContainerBuilder && TextDisplayBuilder && SeparatorBuilder && MediaGalleryBuilder && MediaGalleryItemBuilder;
+
+  if (canUseBuilders) {
+    // Media gallery: setURL('attachment://welcome.png') è il modo corretto per mostrare allegati dentro V2 [web:380]
+    const gallery = new MediaGalleryBuilder().addItems(
+      new MediaGalleryItemBuilder()
+        .setURL(`attachment://${fileName}`)
+        .setDescription("Welcome card")
+    );
+
+    return [
+      new ContainerBuilder()
+        .addComponents(
+          new TextDisplayBuilder().setContent(`# ${title}`),
+          new SeparatorBuilder().setSpacing(1).setDivider(false),
+          new TextDisplayBuilder().setContent(line),
+          new SeparatorBuilder().setSpacing(2).setDivider(true),
+          gallery,
+          new SeparatorBuilder().setSpacing(2).setDivider(true),
+          new TextDisplayBuilder().setContent(`-# Welcome System`)
+        ),
+    ];
+  }
+
+  // fallback raw (se non hai i builder)
   return [
     {
       type: 17,
       components: [
-        { type: 10, content: `# ${title} • ${guildName}` },
+        { type: 10, content: `# ${title}` },
         { type: 14, divider: false, spacing: 1 },
         { type: 10, content: line },
         { type: 14, divider: true, spacing: 2 },
-        { type: 12, items: [{ media: { url: `attachment://${fileName}` } }] },
+        { type: 12, items: [{ description: "Welcome card", url: `attachment://${fileName}` }] }, // in alcune build Discord vuole "url" diretto
         { type: 14, divider: true, spacing: 2 },
         { type: 10, content: `-# Welcome System` },
       ],
@@ -526,14 +538,14 @@ function buildWelcomePanelComponents({ guildName, userId, fileName, mode }) {
   ];
 }
 
-async function sendWelcomePanel(member, mode = "welcome") {
+async function sendWelcome(member, mode = "welcome") {
   const channelId = mode === "goodbye" ? GOODBYE_CHANNEL_ID : WELCOME_CHANNEL_ID;
   if (!channelId) return;
 
   const ch = await member.guild.channels.fetch(channelId).catch(() => null);
   if (!ch || !ch.isTextBased?.()) return;
 
-  // anti doppio invio (anche se l’evento arriva 2 volte)
+  // lock anti doppio invio
   const lock = await acquireGlobalLock(`welcome:${mode}:${member.guild.id}:${member.id}`, 60_000);
   if (!lock.ok) return;
 
@@ -545,12 +557,12 @@ async function sendWelcomePanel(member, mode = "welcome") {
     const file = new AttachmentBuilder(buf, { name: fileName });
 
     await ch.send({
-      flags: 32768,
-      components: buildWelcomePanelComponents({
+      flags: MessageFlags.IsComponentsV2,
+      components: buildWelcomeContainer({
         guildName: member.guild.name,
         userId: member.id,
-        fileName,
         mode,
+        fileName,
       }),
       files: [file],
       allowedMentions: { users: [member.id], roles: [], repliedUser: false },
@@ -560,7 +572,7 @@ async function sendWelcomePanel(member, mode = "welcome") {
   }
 }
 
-// ================== PANEL TICKET ==================
+// ================== TICKET PANEL (come prima) ==================
 function buildTicketPanelComponents() {
   const inner = [
     { type: 10, content: `# <:icona_ticket:1467182266554908953> Famiglia Gotti – Ticket Fazione` },
@@ -597,11 +609,9 @@ async function loadPanelState() {
     return {};
   }
 }
-
 async function savePanelState(obj) {
   await fsp.writeFile(PANEL_STATE_FILE, JSON.stringify(obj, null, 2), "utf8").catch(() => {});
 }
-
 async function getPanelMessageId(guildId, channelId) {
   const key = `panel:${guildId}:${channelId}`;
   if (redis) {
@@ -613,7 +623,6 @@ async function getPanelMessageId(guildId, channelId) {
   const state = await loadPanelState();
   return state[key] || null;
 }
-
 async function setPanelMessageId(guildId, channelId, messageId) {
   const key = `panel:${guildId}:${channelId}`;
   if (redis) {
@@ -627,11 +636,9 @@ async function setPanelMessageId(guildId, channelId, messageId) {
   state[key] = messageId;
   await savePanelState(state);
 }
-
 async function upsertTicketPanel(channel) {
   const lock = await acquireGlobalLock(`panel:${channel.guild.id}:${channel.id}`, 10_000);
   if (!lock.ok) return null;
-
   try {
     const existingId = await getPanelMessageId(channel.guild.id, channel.id);
     if (existingId) {
@@ -641,13 +648,11 @@ async function upsertTicketPanel(channel) {
         return existing;
       }
     }
-
     const sent = await channel.send({
-      flags: 32768,
+      flags: MessageFlags.IsComponentsV2,
       components: buildTicketPanelComponents(),
       allowedMentions: { parse: [] },
     });
-
     await setPanelMessageId(channel.guild.id, channel.id, sent.id);
     return sent;
   } finally {
@@ -655,7 +660,7 @@ async function upsertTicketPanel(channel) {
   }
 }
 
-// ================== TICKET WELCOME (nel canale ticket) ==================
+// ================== TICKET WELCOME (nel ticket) ==================
 function buildTicketWelcomeEmbed() {
   return new EmbedBuilder()
     .setTitle("Benvenuto nel Sistema Ticket della Famiglia Gotti <:icona_ticket:1467182266554908953>")
@@ -663,12 +668,10 @@ function buildTicketWelcomeEmbed() {
     .setThumbnail(WELCOME_THUMB_URL)
     .setColor(0xed4245);
 }
-
 function buildCloseButtonRow() {
   const btn = new ButtonBuilder().setCustomId("ticket_close_now").setStyle(ButtonStyle.Danger).setLabel("🔐・Chiudi Ticket");
   return new ActionRowBuilder().addComponents(btn);
 }
-
 async function pinAndCleanupPinSystemMessage(msg) {
   try { await msg.pin("Ticket header"); } catch { return; }
   try {
@@ -677,7 +680,6 @@ async function pinAndCleanupPinSystemMessage(msg) {
     if (sysPin) await sysPin.delete().catch(() => {});
   } catch {}
 }
-
 async function sendTicketWelcome(channel, guildName, userId) {
   const m = await channel.send({
     content: `Benvenuto <@${userId}> nel Sistema Ticket della **${guildName}**`,
@@ -698,16 +700,13 @@ async function loadTranscriptIndex() {
     transcriptIndex = new Map();
   }
 }
-
 async function saveTranscriptIndex() {
   const obj = Object.fromEntries(transcriptIndex.entries());
   await fsp.writeFile(TRANSCRIPTS_INDEX_FILE, JSON.stringify(obj, null, 2), "utf8").catch(() => {});
 }
-
 async function cleanupOldTranscripts() {
   const now = Date.now();
   let changed = false;
-
   for (const [token, meta] of transcriptIndex.entries()) {
     const createdAt = Number(meta?.createdAt || 0);
     if (!createdAt) continue;
@@ -716,10 +715,8 @@ async function cleanupOldTranscripts() {
     transcriptIndex.delete(token);
     changed = true;
   }
-
   if (changed) await saveTranscriptIndex();
 }
-
 async function buildTranscriptHtml(channel) {
   if (!discordTranscripts) return null;
   return discordTranscripts.createTranscript(channel, {
@@ -729,7 +726,6 @@ async function buildTranscriptHtml(channel) {
     poweredBy: false,
   });
 }
-
 function makeToken() {
   return crypto.randomBytes(8).toString("hex");
 }
@@ -741,11 +737,9 @@ async function getLogChannel(guild) {
   if (!ch.isTextBased?.()) return null;
   return ch;
 }
-
 function buildTicketLogV2Components({ ticketName, openerId, closedById, category, reason, closedAt, transcriptToken }) {
   const safeReason = (String(reason || "").trim() || "Nessuna motivazione fornita.").slice(0, 900);
   const hhmm = formatRomeHHMM(closedAt || new Date());
-
   const inner = [
     { type: 10, content: `# <:icona_ticket:1467182266554908953> Famiglia Gotti – Log Ticket` },
     { type: 14, divider: false, spacing: 1 },
@@ -757,27 +751,22 @@ function buildTicketLogV2Components({ ticketName, openerId, closedById, category
     { type: 14, divider: true, spacing: 2 },
     { type: 10, content: `-# **LOG Ticket by <@${LOG_FOOTER_USER_ID}> - Oggi alle ${hhmm}**` },
   ];
-
   if (transcriptToken) {
     inner.push(
       { type: 14, divider: true, spacing: 2 },
       { type: 1, components: [{ type: 2, style: 1, custom_id: `dl_tr:${transcriptToken}`, label: "⬇️・Scarica Transcript" }] }
     );
   }
-
   return [{ type: 17, components: inner }];
 }
-
 async function sendTicketLogOnce({ guild, uniqueKey, ...data }) {
   const lock = await acquireGlobalLock(`log:${uniqueKey}`, 30_000);
   if (!lock.ok) return;
-
   try {
     const logChannel = await getLogChannel(guild);
     if (!logChannel) return;
-
     await logChannel.send({
-      flags: 32768,
+      flags: MessageFlags.IsComponentsV2,
       components: buildTicketLogV2Components(data),
       allowedMentions: { parse: [] },
     });
@@ -814,7 +803,6 @@ async function closeTicketCore({ guild, channel, closedById, reason }) {
         const fileName = `${sanitizeForChannelUsername(ticketNameSnapshot)}.html`;
         const filePath = path.join(TRANSCRIPTS_DIR, `${transcriptToken}.html`);
         await fsp.writeFile(filePath, html, "utf8");
-
         transcriptIndex.set(transcriptToken, { file: filePath, name: fileName, createdAt: Date.now() });
         await cleanupOldTranscripts();
         await saveTranscriptIndex();
@@ -903,25 +891,17 @@ async function registerCommandsSafe() {
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
 }
 
-// ================== EVENTI (bind once) ==================
+// ================== EVENTS (bind once) ==================
 function bindEventsOnce() {
   if (global.__FG_BOUND) return;
   global.__FG_BOUND = true;
 
   client.on("guildMemberAdd", async (member) => {
-    try {
-      await sendWelcomePanel(member, "welcome");
-    } catch (e) {
-      console.error(e);
-    }
+    try { await sendWelcome(member, "welcome"); } catch (e) { console.error(e); }
   });
 
   client.on("guildMemberRemove", async (member) => {
-    try {
-      await sendWelcomePanel(member, "goodbye");
-    } catch (e) {
-      console.error(e);
-    }
+    try { await sendWelcome(member, "goodbye"); } catch (e) { console.error(e); }
   });
 
   client.on("messageCreate", async (msg) => {
@@ -945,10 +925,7 @@ function bindEventsOnce() {
         if (!isTicketChannel(msg.channel)) return;
 
         const member = await msg.guild.members.fetch(msg.author.id).catch(() => null);
-        if (!canCloseTicketFromMember(member)) {
-          await msg.reply(`Non hai permessi (serve <@&${TICKET_CLOSE_ROLE_ID}> o admin).`).catch(() => {});
-          return;
-        }
+        if (!canCloseTicketFromMember(member)) return;
 
         await msg.reply("⏳ Chiusura ticket in corso...").catch(() => {});
         await closeTicketCore({
@@ -965,11 +942,10 @@ function bindEventsOnce() {
 
   client.on("interactionCreate", async (interaction) => {
     try {
-      // Idempotenza: se Discord consegna la stessa interaction 2 volte, la seconda viene ignorata
+      // Idempotenza: stessa interaction 2 volte => scarta la seconda
       const idem = await acquireGlobalLock(`ix:${interaction.id}`, 20_000);
       if (!idem.ok) return;
 
-      // /ticketpanel
       if (interaction.isChatInputCommand() && interaction.commandName === "ticketpanel") {
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         await upsertTicketPanel(interaction.channel);
@@ -977,7 +953,6 @@ function bindEventsOnce() {
         return;
       }
 
-      // download transcript
       if (interaction.isButton() && String(interaction.customId).startsWith("dl_tr:")) {
         const token = interaction.customId.split(":")[1] || "";
         const meta = transcriptIndex.get(token);
@@ -997,7 +972,6 @@ function bindEventsOnce() {
         return;
       }
 
-      // modal close
       if (interaction.isModalSubmit() && String(interaction.customId).startsWith("ticket_close_reason:")) {
         const channelId = interaction.customId.split(":")[1] || "";
         if (!interaction.guild || !interaction.channel) return;
@@ -1007,7 +981,6 @@ function bindEventsOnce() {
           await interaction.reply({ content: "Valido solo nei canali ticket.", flags: MessageFlags.Ephemeral }).catch(() => {});
           return;
         }
-
         if (!canCloseTicketFromInteraction(interaction)) {
           await interaction.reply({ content: "Non hai permessi.", flags: MessageFlags.Ephemeral }).catch(() => {});
           return;
@@ -1028,7 +1001,6 @@ function bindEventsOnce() {
         return;
       }
 
-      // open ticket buttons
       if (interaction.isButton() && ["ticket_btn_braccio", "ticket_btn_info", "ticket_btn_wl"].includes(interaction.customId)) {
         if (interaction.customId === "ticket_btn_wl") {
           await interaction.reply({ content: "Prossimamente...", flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -1051,11 +1023,10 @@ function bindEventsOnce() {
 
         const res = await createTicketChannel(interaction, ticketType);
         if (res.already && res.channel) return interaction.editReply({ content: `Hai già un ticket aperto: ${res.channel}` }).catch(() => {});
-        if (res.already) return interaction.editReply({ content: `Hai già un ticket aperto.` }).catch(() => {});
+        if (res.already) return interaction.editReply({ content: "Hai già un ticket aperto." }).catch(() => {});
         return interaction.editReply({ content: `Ticket aperto: ${res.channel}` }).catch(() => {});
       }
 
-      // close button -> modal
       if (interaction.isButton() && interaction.customId === "ticket_close_now") {
         if (!isTicketChannel(interaction.channel)) {
           await interaction.reply({ content: "Solo nei canali ticket.", flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -1076,7 +1047,6 @@ function bindEventsOnce() {
 // ================== READY ==================
 client.once("ready", async () => {
   console.log(`Online: ${client.user.tag}`);
-  console.log("⚙️ Ricorda: per welcome serve Server Members Intent nel Developer Portal e GuildMembers intent nel codice.");
 });
 
 // ================== START ==================
