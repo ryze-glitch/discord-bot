@@ -67,6 +67,7 @@ const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/
 // Welcome
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
+// ✅ usa il banner già in uso ORA (se non metti altro, resta questo)
 const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://i.imgur.com/0F553GO.jpeg";
 const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";
 
@@ -204,7 +205,7 @@ async function acquireInstanceLockOrExit() {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers, // necessario per welcome/leave
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -369,6 +370,17 @@ function drawCover(ctx, img, x, y, w, h) {
   ctx.drawImage(img, nx, ny, nw, nh);
 }
 
+function roundRect(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
 function fitFont(ctx, text, maxWidth, startPx, minPx, weight = 900, family = "Sans") {
   let size = startPx;
   while (size > minPx) {
@@ -377,6 +389,36 @@ function fitFont(ctx, text, maxWidth, startPx, minPx, weight = 900, family = "Sa
     size -= 2;
   }
   return minPx;
+}
+
+function drawPillText(ctx, text, centerX, topY, fontPx, paddingX, paddingY, radius, fill, textColor) {
+  ctx.save();
+  ctx.font = `900 ${fontPx}px Sans`;
+  const tw = ctx.measureText(text).width;
+  const w = tw + paddingX * 2;
+  const h = fontPx + paddingY * 2;
+  const x = centerX - w / 2;
+  const y = topY;
+
+  // shadow
+  ctx.shadowColor = "rgba(0,0,0,0.45)";
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 6;
+
+  ctx.fillStyle = fill;
+  roundRect(ctx, x, y, w, h, radius);
+  ctx.fill();
+
+  // text
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.fillStyle = textColor;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, centerX, y + h / 2);
+
+  ctx.restore();
+  return { nextY: y + h + 14 };
 }
 
 async function renderWelcomeCard(member, mode = "welcome") {
@@ -396,8 +438,8 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.fillRect(0, 0, CARD_W, CARD_H);
   }
 
-  // overlay
-  ctx.fillStyle = "rgba(0,0,0,0.42)";
+  // overlay per leggibilità
+  ctx.fillStyle = "rgba(0,0,0,0.30)";
   ctx.fillRect(0, 0, CARD_W, CARD_H);
 
   // avatar
@@ -406,78 +448,70 @@ async function renderWelcomeCard(member, mode = "welcome") {
   try { avatar = await Canvas.loadImage(avatarUrl); } catch {}
 
   const cx = CARD_W / 2;
-  const cy = 115;
-  const r = 78;
+  const avatarCy = 125;
+  const r = 84;
 
+  // ring bianco
   ctx.beginPath();
-  ctx.arc(cx, cy, r + 10, 0, Math.PI * 2);
+  ctx.arc(cx, avatarCy, r + 10, 0, Math.PI * 2);
   ctx.closePath();
-  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.fillStyle = "rgba(255,255,255,0.98)";
   ctx.fill();
 
-  ctx.beginPath();
-  ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
-  ctx.closePath();
-  ctx.fillStyle = "rgba(0,0,0,0.35)";
-  ctx.fill();
-
+  // avatar clip
   if (avatar) {
     ctx.save();
     ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.arc(cx, avatarCy, r, 0, Math.PI * 2);
     ctx.closePath();
     ctx.clip();
-    ctx.drawImage(avatar, cx - r, cy - r, r * 2, r * 2);
+    ctx.drawImage(avatar, cx - r, avatarCy - r, r * 2, r * 2);
     ctx.restore();
+  } else {
+    ctx.beginPath();
+    ctx.arc(cx, avatarCy, r, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(255,255,255,0.25)";
+    ctx.fill();
   }
 
-  const title = mode === "goodbye" ? "GOODBYE!" : "WELCOME!";
-  const rawName = (member.displayName || member.user.username || "USER").toUpperCase();
-  const nameLine = `.${rawName}..`;
+  // ======= TESTI “NELLA SCHEDA SOTTO LA FOTO” (come schema) =======
+  const isGoodbye = mode === "goodbye";
+  const title = isGoodbye ? "ARRIVEDERCI!" : "BENVENUTO!";
+  const name = (member.displayName || member.user.username || "Nome Discord");
   const memberCount = member.guild?.memberCount ?? 0;
+  const countText = `Membri: ${memberCount}`;
 
-  ctx.textAlign = "center";
-  ctx.textBaseline = "alphabetic";
+  // font adattivo sulle pill
+  const titlePx = fitFont(ctx, title, 900, 56, 34, 900, "Sans");
+  const namePx = fitFont(ctx, name, 920, 44, 24, 900, "Sans");
+  const countPx = fitFont(ctx, countText, 920, 34, 18, 900, "Sans");
 
-  ctx.fillStyle = "#ffffff";
-  ctx.shadowColor = "rgba(0,0,0,0.60)";
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 6;
-  ctx.font = "900 86px Sans";
-  ctx.fillText(title, cx, 265);
-
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-
-  const nameSize = fitFont(ctx, nameLine, 1050, 60, 28, 900, "Sans");
-  ctx.font = `900 ${nameSize}px Sans`;
-  ctx.fillStyle = "#ff2b2b";
-  ctx.fillText(nameLine, cx, 330);
-
-  ctx.font = "600 30px Sans";
-  ctx.fillStyle = "rgba(255,255,255,0.85)";
-  ctx.fillText(`You are the member #${memberCount}`, cx, 382);
+  let y = 220;
+  y = drawPillText(ctx, title, cx, y, titlePx, 44, 16, 28, "rgba(255,255,255,0.96)", "#111").nextY;
+  y = drawPillText(ctx, name, cx, y, namePx, 44, 14, 26, "rgba(255,255,255,0.96)", "#111").nextY;
+  drawPillText(ctx, countText, cx, y, countPx, 40, 12, 24, "rgba(255,255,255,0.96)", "#111");
 
   return canvas.toBuffer("image/png");
 }
 
-// ✅ FIX: Components V2 container con MediaGallery CORRETTA (media.url)
+// ================== WELCOME MESSAGE (Components V2) ==================
+// ✅ corretto: Media Gallery item con { media: { url: "attachment://file.png" } } [page:0][page:1]
 function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
   const title = mode === "goodbye" ? `Arrivederci • ${guildName}` : `Benvenuto • ${guildName}`;
   const line = mode === "goodbye"
-    ? `Goodbye <@${userId}>, grazie per essere stato in **${guildName}**!`
-    : `Hello <@${userId}>, welcome to **${guildName}**!`;
+    ? `Ciao <@${userId}>, grazie per essere stato in **${guildName}**!`
+    : `Ciao <@${userId}>, benvenuto in **${guildName}**!`;
 
   return [
     {
-      type: 17, // Container
+      type: 17,
       components: [
-        { type: 10, content: `# ${title}` }, // Text Display
-        { type: 14, divider: false, spacing: 1 }, // Separator
-        { type: 10, content: line }, // Text Display
-        { type: 14, divider: true, spacing: 2 }, // Separator
+        { type: 10, content: `# ${title}` },
+        { type: 14, divider: false, spacing: 1 },
+        { type: 10, content: line },
+        { type: 14, divider: true, spacing: 2 },
 
-        // Media Gallery (QUI era il punto che ti mancava)
         {
           type: 12,
           items: [
@@ -509,11 +543,11 @@ async function sendWelcomeV2(member, mode = "welcome") {
     const buf = await renderWelcomeCard(member, mode);
     if (!buf) return;
 
-    const fileName = mode === "goodbye" ? "goodbye.png" : "welcome.png";
+    const fileName = mode === "goodbye" ? "goodbye.png" : "welcome.png"; // deve combaciare con attachment://
     const file = new AttachmentBuilder(buf, { name: fileName });
 
     await ch.send({
-      flags: MessageFlags.IsComponentsV2, // 32768
+      flags: MessageFlags.IsComponentsV2,
       components: buildWelcomeContainerV2({
         guildName: member.guild.name,
         userId: member.id,
@@ -865,7 +899,7 @@ function bindEventsOnce() {
   if (global.__FG_BOUND) return;
   global.__FG_BOUND = true;
 
-  // ✅ Welcome/Goodbye
+  // ✅ Welcome/Goodbye (container + card con scritte sotto avatar)
   client.on("guildMemberAdd", async (member) => {
     try { await sendWelcomeV2(member, "welcome"); } catch (e) { console.error(e); }
   });
