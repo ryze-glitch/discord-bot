@@ -67,8 +67,9 @@ const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/
 // Welcome
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
-// Sfondo: banner già in uso adesso (se non metti altro, usa questo)
-const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://i.imgur.com/0F553GO.jpeg";
+
+// 👇 metti qui il tuo banner. Se usi "https://imgur.com/0F553GO" il codice lo converte in direct-link.
+const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://imgur.com/0F553GO";
 const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";
 
 // Redis (opzionale)
@@ -114,26 +115,17 @@ ensureDirsSync();
 
 // ================== LOCK UTILS ==================
 function isPidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 function readPidFromLockDir(lockDir) {
   try {
     const p = fs.readFileSync(path.join(lockDir, "pid.txt"), "utf8").trim();
     const pid = Number(p);
     return Number.isFinite(pid) ? pid : null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 function removeDirSync(p) {
-  try {
-    fs.rmSync(p, { recursive: true, force: true });
-  } catch {}
+  try { fs.rmSync(p, { recursive: true, force: true }); } catch {}
 }
 async function acquireDirLock(baseDir, key, ttlMs = LOCK_TTL_MS) {
   const safe = String(key).replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -198,30 +190,16 @@ async function acquireInstanceLockOrExit() {
     removeDirSync(INSTANCE_LOCK_DIR);
   };
 
-  process.on("SIGINT", () => {
-    cleanup();
-    process.exit(0);
-  });
-  process.on("SIGTERM", () => {
-    cleanup();
-    process.exit(0);
-  });
+  process.on("SIGINT", () => { cleanup(); process.exit(0); });
+  process.on("SIGTERM", () => { cleanup(); process.exit(0); });
 
   process.once("SIGUSR2", () => {
     cleanup();
     process.kill(process.pid, "SIGUSR2");
   });
 
-  process.on("uncaughtException", (e) => {
-    console.error(e);
-    cleanup();
-    process.exit(1);
-  });
-  process.on("unhandledRejection", (e) => {
-    console.error(e);
-    cleanup();
-    process.exit(1);
-  });
+  process.on("uncaughtException", (e) => { console.error(e); cleanup(); process.exit(1); });
+  process.on("unhandledRejection", (e) => { console.error(e); cleanup(); process.exit(1); });
 }
 
 // ================== CLIENT ==================
@@ -249,6 +227,38 @@ function isValidHttpUrl(url) {
     return false;
   }
 }
+
+function normalizeImgurToDirect(url) {
+  // Se metti https://imgur.com/ID, Canvas spesso non lo carica.
+  // Converte a https://i.imgur.com/ID.jpg (puoi cambiare estensione se serve).
+  if (!url || typeof url !== "string") return url;
+  const u = url.trim();
+
+  try {
+    const parsed = new URL(u);
+    const host = parsed.hostname.toLowerCase();
+    const parts = parsed.pathname.split("/").filter(Boolean);
+
+    // imgur.com/ABC123 oppure www.imgur.com/ABC123
+    if ((host === "imgur.com" || host === "www.imgur.com") && parts.length >= 1) {
+      const id = parts[0];
+      if (id && !id.includes(".") && id !== "a" && id !== "gallery") {
+        return `https://i.imgur.com/${id}.jpg`;
+      }
+    }
+
+    // i.imgur.com/ABC123 (senza estensione) => aggiungi jpg
+    if (host === "i.imgur.com" && parts.length >= 1) {
+      const last = parts[parts.length - 1];
+      if (last && !last.includes(".")) return `https://i.imgur.com/${last}.jpg`;
+    }
+
+    return u;
+  } catch {
+    return u;
+  }
+}
+
 function sanitizeForChannelUsername(username) {
   const s = String(username || "")
     .toLowerCase()
@@ -258,21 +268,26 @@ function sanitizeForChannelUsername(username) {
     .replace(/^[_-]+|[_-]+$/g, "");
   return s || "utente";
 }
+
 function hasRole(memberOrInteraction, roleId) {
   const member = memberOrInteraction?.member ?? memberOrInteraction;
   return member?.roles?.cache?.has(roleId);
 }
+
 function canCloseTicketFromMember(member) {
   if (!member) return false;
   if (member.permissions?.has?.(PermissionFlagsBits.Administrator)) return true;
   return member.roles?.cache?.has(TICKET_CLOSE_ROLE_ID);
 }
+
 function canCloseTicketFromInteraction(interaction) {
   return canCloseTicketFromMember(interaction?.member);
 }
+
 function isTicketChannel(channel) {
   return channel?.type === ChannelType.GuildText && typeof channel.name === "string" && channel.name.includes("ticket-");
 }
+
 function resolveTicketParentId(guild) {
   if (!TICKET_CATEGORY_ID) return null;
   const ch = guild.channels.cache.get(TICKET_CATEGORY_ID);
@@ -280,31 +295,37 @@ function resolveTicketParentId(guild) {
   if (ch.type !== ChannelType.GuildCategory) return null;
   return ch.id;
 }
+
 function channelNameForTicket(ticketType, username) {
   const u = sanitizeForChannelUsername(username);
   if (ticketType === "Braccio Armato") return `🔫・ticket-${u}`;
   if (ticketType === "Informativa") return `📄・ticket-${u}`;
   return `ticket-${u}`;
 }
+
 function topicForTicket(ticketType, userId) {
   return `**Categoria:** ${ticketType} | **Utente:** <@${userId}>`;
 }
+
 async function findExistingTicketFresh(guild, userId) {
   await guild.channels.fetch().catch(() => null);
   return guild.channels.cache.find(
     (c) => c?.type === ChannelType.GuildText && typeof c.topic === "string" && c.topic.includes(`<@${userId}>`)
   );
 }
+
 function extractUserIdFromTopic(topic) {
   if (!topic || typeof topic !== "string") return null;
   const m = topic.match(/<@(\d{17,20})>/);
   return m ? m[1] : null;
 }
+
 function extractCategoryFromTopic(topic) {
   if (!topic || typeof topic !== "string") return "Sconosciuta";
   const m = topic.match(/\*\*Categoria:\*\*\s*([^|]+)\s*\|/);
   return m ? m[1].trim() : "Sconosciuta";
 }
+
 function formatRomeHHMM(date = new Date()) {
   return new Intl.DateTimeFormat("it-IT", {
     timeZone: "Europe/Rome",
@@ -313,6 +334,7 @@ function formatRomeHHMM(date = new Date()) {
     hour12: false,
   }).format(date);
 }
+
 function lockUserOpen(userId, ttlMs = 15_000) {
   const now = Date.now();
   const last = openingInProcess.get(userId);
@@ -361,9 +383,9 @@ const CLOSED_MESSAGE =
   `**Per Aprire Ticket anche al di fuori degli Orari di Supporto Acquista ora l'@&${ALWAYS_OPEN_ROLE_ID} a 4,99€ per ottenere assistenza rapida senza tempi di Attesa per qualsiasi tipo di problema o richiesta!**`;
 
 // ================== WELCOME CARD (Canvas) ==================
-// ✅ 16:9 per evitare crop dentro la Media Gallery
+// ✅ come la tua 1ª foto: 1200x450, WELCOME + nome rosso + member #
 const CARD_W = 1200;
-const CARD_H = 675;
+const CARD_H = 450;
 
 let cachedWelcomeBg = null;
 
@@ -371,7 +393,9 @@ async function loadWelcomeBackground() {
   if (!Canvas) return null;
   if (cachedWelcomeBg) return cachedWelcomeBg;
 
-  const src = (WELCOME_BG_PATH && WELCOME_BG_PATH.trim()) ? WELCOME_BG_PATH.trim() : (WELCOME_BG_URL || "").trim();
+  let src = (WELCOME_BG_PATH && WELCOME_BG_PATH.trim()) ? WELCOME_BG_PATH.trim() : (WELCOME_BG_URL || "").trim();
+  src = normalizeImgurToDirect(src);
+
   if (!src) return null;
 
   try {
@@ -394,70 +418,15 @@ function drawCover(ctx, img, x, y, w, h) {
   ctx.drawImage(img, nx, ny, nw, nh);
 }
 
-function roundRect(ctx, x, y, w, h, r) {
-  const rr = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.arcTo(x + w, y, x + w, y + h, rr);
-  ctx.arcTo(x + w, y + h, x, y + h, rr);
-  ctx.arcTo(x, y + h, x, y, rr);
-  ctx.arcTo(x, y, x + w, y, rr);
-  ctx.closePath();
-}
-
-function fitFont(ctx, text, maxWidth, startPx, minPx, weight = 900) {
+function fitFont(ctx, text, maxWidth, startPx, minPx, weight = 900, family = "sans-serif") {
   const t = String(text ?? "");
   let size = startPx;
   while (size > minPx) {
-    ctx.font = `${weight} ${size}px Arial`;
+    ctx.font = `${weight} ${size}px ${family}`;
     if (ctx.measureText(t).width <= maxWidth) return size;
     size -= 2;
   }
   return minPx;
-}
-
-function drawPillText(ctx, text, centerX, topY, fontPx, opts = {}) {
-  const t = String(text ?? "");
-  const {
-    paddingX = 46,
-    paddingY = 18,
-    radius = 26,
-    fill = "rgba(255,255,255,0.97)",
-    textColor = "#121212",
-    minWidth = 520,
-    shadow = true,
-  } = opts;
-
-  ctx.save();
-  ctx.font = `900 ${fontPx}px Arial`;
-  const tw = ctx.measureText(t).width;
-
-  const w = Math.max(minWidth, tw + paddingX * 2);
-  const h = Math.round(fontPx + paddingY * 2);
-
-  const x = Math.round(centerX - w / 2);
-  const y = Math.round(topY);
-
-  if (shadow) {
-    ctx.shadowColor = "rgba(0,0,0,0.40)";
-    ctx.shadowBlur = 16;
-    ctx.shadowOffsetY = 8;
-  }
-
-  ctx.fillStyle = fill;
-  roundRect(ctx, x, y, w, h, radius);
-  ctx.fill();
-
-  // testo
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-  ctx.fillStyle = textColor;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(t, centerX, y + h / 2);
-
-  ctx.restore();
-  return y + h + 16;
 }
 
 async function renderWelcomeCard(member, mode = "welcome") {
@@ -466,6 +435,7 @@ async function renderWelcomeCard(member, mode = "welcome") {
   const canvas = Canvas.createCanvas(CARD_W, CARD_H);
   const ctx = canvas.getContext("2d");
 
+  // bg
   const bg = await loadWelcomeBackground();
   if (bg) {
     drawCover(ctx, bg, 0, 0, CARD_W, CARD_H);
@@ -477,67 +447,79 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.fillRect(0, 0, CARD_W, CARD_H);
   }
 
-  // overlay
-  ctx.fillStyle = "rgba(0,0,0,0.22)";
+  // overlay leggero (per leggibilità sul tuo banner)
+  ctx.fillStyle = "rgba(0,0,0,0.18)";
   ctx.fillRect(0, 0, CARD_W, CARD_H);
 
   // avatar
   const avatarUrl = member.user.displayAvatarURL({ extension: "png", size: 256 });
   let avatar = null;
-  try {
-    avatar = await Canvas.loadImage(avatarUrl);
-  } catch {}
+  try { avatar = await Canvas.loadImage(avatarUrl); } catch {}
 
   const cx = CARD_W / 2;
-  const avatarCy = 200; // ✅ più giù: niente taglio sopra
-  const r = 92;
+  const cy = 115;
+  const r = 78;
 
   // ring bianco
   ctx.beginPath();
-  ctx.arc(cx, avatarCy, r + 12, 0, Math.PI * 2);
+  ctx.arc(cx, cy, r + 10, 0, Math.PI * 2);
   ctx.closePath();
-  ctx.fillStyle = "rgba(255,255,255,0.98)";
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
   ctx.fill();
 
-  // avatar clip
+  // ring interno
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(0,0,0,0.32)";
+  ctx.fill();
+
   if (avatar) {
     ctx.save();
     ctx.beginPath();
-    ctx.arc(cx, avatarCy, r, 0, Math.PI * 2);
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.closePath();
     ctx.clip();
-    ctx.drawImage(avatar, cx - r, avatarCy - r, r * 2, r * 2);
+    ctx.drawImage(avatar, cx - r, cy - r, r * 2, r * 2);
     ctx.restore();
-  } else {
-    ctx.beginPath();
-    ctx.arc(cx, avatarCy, r, 0, Math.PI * 2);
-    ctx.closePath();
-    ctx.fillStyle = "rgba(255,255,255,0.25)";
-    ctx.fill();
   }
 
-  // ===== TESTI SOTTO LA FOTO (come schema) =====
-  const isGoodbye = mode === "goodbye";
-  const titolo = isGoodbye ? "ARRIVEDERCI!" : "BENVENUTO!";
-  const nomeDiscord = (member.displayName || member.user.username || "Nome Discord");
-  const membri = member.guild?.memberCount ?? 0;
-  const numeroMembri = `Numero di membri: ${membri}`;
+  const title = mode === "goodbye" ? "GOODBYE!" : "WELCOME!";
+  const rawName = (member.displayName || member.user.username || "USER").toUpperCase();
+  const memberCount = member.guild?.memberCount ?? 0;
 
-  // font adattivo
-  const titoloPx = fitFont(ctx, titolo, 900, 58, 36, 900);
-  const nomePx = fitFont(ctx, nomeDiscord, 980, 44, 22, 900);
-  const membriPx = fitFont(ctx, numeroMembri, 980, 34, 18, 900);
+  // title
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#ffffff";
+  ctx.shadowColor = "rgba(0,0,0,0.60)";
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 6;
+  ctx.font = "900 86px sans-serif";
+  ctx.fillText(title, cx, 265);
 
-  let y = 315;
-  y = drawPillText(ctx, titolo, cx, y, titoloPx, { minWidth: 560, radius: 28 });
-  y = drawPillText(ctx, nomeDiscord, cx, y, nomePx, { minWidth: 640, radius: 26 });
-  y = drawPillText(ctx, numeroMembri, cx, y, membriPx, { minWidth: 520, radius: 24 });
+  // name (rosso)
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  const nameSize = fitFont(ctx, rawName, 1050, 64, 28, 900, "sans-serif");
+  ctx.font = `900 ${nameSize}px sans-serif`;
+  ctx.fillStyle = "#ff2b2b";
+  ctx.shadowColor = "rgba(0,0,0,0.55)";
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 4;
+  ctx.fillText(rawName, cx, 330);
+
+  // member count
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.font = "600 30px sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.88)";
+  ctx.fillText(`You are the member #${memberCount}`, cx, 382);
 
   return canvas.toBuffer("image/png");
 }
 
 // ================== WELCOME MESSAGE (Components V2) ==================
-// ✅ Media Gallery corretta con media.url = attachment://... [page:0][page:1]
 function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
   const title = mode === "goodbye" ? `Arrivederci • ${guildName}` : `Benvenuto • ${guildName}`;
   const line = mode === "goodbye"
@@ -666,6 +648,7 @@ async function setPanelMessageId(guildId, channelId, messageId) {
   state[key] = messageId;
   await savePanelState(state);
 }
+
 async function upsertTicketPanel(channel) {
   const lock = await acquireGlobalLock(`panel:${channel.guild.id}:${channel.id}`, 10_000);
   if (!lock.ok) return null;
@@ -706,11 +689,7 @@ function buildCloseButtonRow() {
   return new ActionRowBuilder().addComponents(btn);
 }
 async function pinAndCleanupPinSystemMessage(msg) {
-  try {
-    await msg.pin("Ticket header");
-  } catch {
-    return;
-  }
+  try { await msg.pin("Ticket header"); } catch { return; }
   try {
     const recent = await msg.channel.messages.fetch({ limit: 5 });
     const sysPin = recent.find((m) => m.type === MessageType.ChannelPinnedMessage);
@@ -942,19 +921,11 @@ function bindEventsOnce() {
   global.__FG_BOUND = true;
 
   client.on("guildMemberAdd", async (member) => {
-    try {
-      await sendWelcomeV2(member, "welcome");
-    } catch (e) {
-      console.error(e);
-    }
+    try { await sendWelcomeV2(member, "welcome"); } catch (e) { console.error(e); }
   });
 
   client.on("guildMemberRemove", async (member) => {
-    try {
-      await sendWelcomeV2(member, "goodbye");
-    } catch (e) {
-      console.error(e);
-    }
+    try { await sendWelcomeV2(member, "goodbye"); } catch (e) { console.error(e); }
   });
 
   client.on("messageCreate", async (msg) => {
