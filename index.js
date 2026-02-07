@@ -68,7 +68,8 @@ const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
 
-// Sfondo welcome (puoi lasciare imgur.com/0F553GO)
+// Sfondo welcome: tuo link
+// Puoi anche mettere direttamente: https://i.imgur.com/0F553GO.jpg
 const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://imgur.com/0F553GO";
 const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";
 
@@ -254,6 +255,7 @@ function isValidHttpUrl(url) {
   }
 }
 
+// converte imgur.com/ID -> i.imgur.com/ID.(jpg|png|jpeg)
 function normalizeImgurToDirectCandidates(url) {
   if (!url || typeof url !== "string") return [url];
   const u = url.trim();
@@ -426,10 +428,8 @@ function registerWelcomeFontOnce() {
     return;
   }
 
-  // già registrato
   if (Canvas.GlobalFonts.has?.(WELCOME_FONT_FAMILY)) return;
 
-  // metti il font nella repo in uno di questi path
   const candidates = [
     path.join(__dirname, "static", "Lexend-VariableFont_wght.ttf"),
     path.join(__dirname, "Lexend-VariableFont_wght.ttf"),
@@ -453,7 +453,6 @@ function registerWelcomeFontOnce() {
 }
 
 // ================== WELCOME CARD (Canvas) ==================
-// ✅ 16:9 per evitare effetto schiacciato nella preview Discord
 const CARD_W = 1200;
 const CARD_H = 675;
 
@@ -469,8 +468,22 @@ async function loadWelcomeBackground() {
       cachedWelcomeBg = await Canvas.loadImage(srcLocal);
       return cachedWelcomeBg;
     } catch (e) {
-      console.error("❌ Errore loadImage background (path):", srcLocal, e?.message || e);
+      console.error("❌ Errore loadImage background (WELCOME_BG_PATH):", srcLocal, e?.message || e);
     }
+  }
+
+  const localCandidates = [
+    path.join(__dirname, "static", "welcome_bg.jpg"),
+    path.join(__dirname, "static", "welcome_bg.png"),
+    path.join(__dirname, "static", "welcome_bg.jpeg"),
+  ];
+  for (const p of localCandidates) {
+    try {
+      if (fs.existsSync(p)) {
+        cachedWelcomeBg = await Canvas.loadImage(p);
+        return cachedWelcomeBg;
+      }
+    } catch {}
   }
 
   const candidates = normalizeImgurToDirectCandidates((WELCOME_BG_URL || "").trim());
@@ -482,7 +495,7 @@ async function loadWelcomeBackground() {
     } catch {}
   }
 
-  console.error("❌ Non riesco a caricare WELCOME_BG_URL:", WELCOME_BG_URL);
+  console.error("❌ Non riesco a caricare alcuno sfondo (path/repo/url).");
   return null;
 }
 
@@ -495,6 +508,29 @@ function drawCover(ctx, img, x, y, w, h) {
   const nx = x + (w - nw) / 2;
   const ny = y + (h - nh) / 2;
   ctx.drawImage(img, nx, ny, nw, nh);
+}
+
+function drawContain(ctx, img, x, y, w, h) {
+  const iw = img.width;
+  const ih = img.height;
+  const imgRatio = iw / ih;
+  const canvasRatio = w / h;
+
+  let dw, dh, dx, dy;
+
+  if (imgRatio >= canvasRatio) {
+    dw = w;
+    dh = dw / imgRatio;
+    dx = x;
+    dy = y + (h - dh) / 2;
+  } else {
+    dh = h;
+    dw = dh * imgRatio;
+    dx = x + (w - dw) / 2;
+    dy = y;
+  }
+
+  ctx.drawImage(img, dx, dy, dw, dh);
 }
 
 function fitFont(ctx, text, maxWidth, startPx, minPx, weight = 900, family = "sans-serif") {
@@ -548,9 +584,30 @@ async function renderWelcomeCard(member, mode = "welcome") {
   const canvas = Canvas.createCanvas(CARD_W, CARD_H);
   const ctx = canvas.getContext("2d");
 
+  ctx.fillStyle = "#0b0710";
+  ctx.fillRect(0, 0, CARD_W, CARD_H);
+
   const bg = await loadWelcomeBackground();
   if (bg) {
+    // sotto: cover scurito (riempie tutto)
+    ctx.save();
+    try { ctx.filter = "blur(18px)"; } catch {}
+    ctx.globalAlpha = 0.85;
     drawCover(ctx, bg, 0, 0, CARD_W, CARD_H);
+    ctx.restore();
+
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    ctx.fillRect(0, 0, CARD_W, CARD_H);
+
+    // sopra: contain (nessun taglio dell’immagine originale)
+    ctx.save();
+    try { ctx.filter = "none"; } catch {}
+    ctx.globalAlpha = 1;
+    drawContain(ctx, bg, 0, 0, CARD_W, CARD_H);
+    ctx.restore();
+
+    ctx.fillStyle = "rgba(0,0,0,0.14)";
+    ctx.fillRect(0, 0, CARD_W, CARD_H);
   } else {
     const g = ctx.createLinearGradient(0, 0, CARD_W, CARD_H);
     g.addColorStop(0, "#2a0a0a");
@@ -559,17 +616,12 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.fillRect(0, 0, CARD_W, CARD_H);
   }
 
-  // overlay leggero per leggibilità testo
-  ctx.fillStyle = "rgba(0,0,0,0.18)";
-  ctx.fillRect(0, 0, CARD_W, CARD_H);
-
-  // avatar
   const avatarUrl = member.user.displayAvatarURL({ extension: "png", size: 256 });
   let avatar = null;
   try { avatar = await Canvas.loadImage(avatarUrl); } catch {}
 
   const cx = CARD_W / 2;
-  const cy = 170; // più giù (16:9)
+  const cy = 170;
   const r = 84;
 
   ctx.beginPath();
@@ -594,17 +646,15 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.restore();
   }
 
-  // testi in italiano
   const isGoodbye = mode === "goodbye";
   const title = isGoodbye ? "ARRIVEDERCI!" : "BENVENUTO!";
   const name = (member.displayName || member.user.username || "UTENTE").toUpperCase();
 
   const memberCount = await getFreshMemberCount(member.guild);
-  const countLine = `Sei il membro #${memberCount}`;
+  const countLine = `Membri totali: ${memberCount}`;
 
   const family = WELCOME_FONT_FAMILY || "sans-serif";
 
-  // Titolo
   drawCenteredText(
     ctx,
     title,
@@ -617,7 +667,6 @@ async function renderWelcomeCard(member, mode = "welcome") {
     true
   );
 
-  // Nome rosso
   const nameSize = fitFont(ctx, name, 1080, 72, 28, 900, family);
   drawCenteredText(
     ctx,
@@ -631,7 +680,6 @@ async function renderWelcomeCard(member, mode = "welcome") {
     true
   );
 
-  // Count
   drawCenteredText(
     ctx,
     countLine,
@@ -650,9 +698,10 @@ async function renderWelcomeCard(member, mode = "welcome") {
 // ================== WELCOME MESSAGE (Components V2) ==================
 function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
   const title = mode === "goodbye" ? `Arrivederci • ${guildName}` : `Benvenuto • ${guildName}`;
-  const line = mode === "goodbye"
-    ? `Ciao <@${userId}>, a presto su **${guildName}**!`
-    : `Ciao <@${userId}>, benvenuto in **${guildName}**!`;
+  const line =
+    mode === "goodbye"
+      ? `Ciao <@${userId}>, a presto su **${guildName}**!`
+      : `Ciao <@${userId}>, benvenuto in **${guildName}**!`;
 
   return [
     {
@@ -662,15 +711,7 @@ function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
         { type: 14, divider: false, spacing: 1 },
         { type: 10, content: line },
         { type: 14, divider: true, spacing: 2 },
-        {
-          type: 12,
-          items: [
-            {
-              description: "Welcome card",
-              media: { url: `attachment://${fileName}` },
-            },
-          ],
-        },
+        { type: 12, items: [{ description: "Welcome card", media: { url: `attachment://${fileName}` } }] },
         { type: 14, divider: true, spacing: 2 },
         { type: 10, content: `-# Welcome System` },
       ],
