@@ -8,7 +8,6 @@ const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
 
-const djs = require("discord.js");
 const {
   Client,
   GatewayIntentBits,
@@ -27,16 +26,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
   AttachmentBuilder,
-} = djs;
-
-// Components V2 builders (se presenti nella tua versione)
-const {
-  ContainerBuilder,
-  TextDisplayBuilder,
-  SeparatorBuilder,
-  MediaGalleryBuilder,
-  MediaGalleryItemBuilder,
-} = djs;
+} = require("discord.js");
 
 // ================== OPTIONAL LIBS ==================
 let Canvas = null;
@@ -77,8 +67,8 @@ const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/
 // Welcome
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
-const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://i.imgur.com/0F553GO.jpeg"; // tua immagine
-const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || ""; // alternativa locale
+const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://i.imgur.com/0F553GO.jpeg";
+const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";
 
 // Redis (opzionale)
 const REDIS_URL = process.env.REDIS_URL || "";
@@ -100,7 +90,7 @@ if (REDIS_URL) {
   }
 }
 
-// ================== DATA DIR (globale macchina) ==================
+// ================== DATA DIR ==================
 const BASE_DATA_DIR = path.join(os.tmpdir(), `famiglia-gotti-bot-${CLIENT_ID}`);
 const LOCKS_DIR = path.join(BASE_DATA_DIR, "locks");
 const IDEM_DIR = path.join(LOCKS_DIR, "idem");
@@ -125,7 +115,6 @@ ensureDirsSync();
 function isPidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
-
 function readPidFromLockDir(lockDir) {
   try {
     const p = fs.readFileSync(path.join(lockDir, "pid.txt"), "utf8").trim();
@@ -133,11 +122,9 @@ function readPidFromLockDir(lockDir) {
     return Number.isFinite(pid) ? pid : null;
   } catch { return null; }
 }
-
 function removeDirSync(p) {
   try { fs.rmSync(p, { recursive: true, force: true }); } catch {}
 }
-
 async function acquireDirLock(baseDir, key, ttlMs = LOCK_TTL_MS) {
   const safe = String(key).replace(/[^a-zA-Z0-9_-]/g, "_");
   const lockPath = path.join(baseDir, safe);
@@ -156,12 +143,10 @@ async function acquireDirLock(baseDir, key, ttlMs = LOCK_TTL_MS) {
     return { ok: false, path: lockPath };
   }
 }
-
 async function releaseDirLock(lockPath) {
   if (!lockPath) return;
   await fsp.rm(lockPath, { recursive: true, force: true }).catch(() => {});
 }
-
 async function acquireGlobalLock(key, ttlMs = LOCK_TTL_MS) {
   if (redis) {
     try {
@@ -219,7 +204,7 @@ async function acquireInstanceLockOrExit() {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers, // welcome/leave [web:679]
+    GatewayIntentBits.GuildMembers, // necessario per welcome/leave
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -240,7 +225,6 @@ function isValidHttpUrl(url) {
     return false;
   }
 }
-
 function sanitizeForChannelUsername(username) {
   const s = String(username || "")
     .toLowerCase()
@@ -250,26 +234,21 @@ function sanitizeForChannelUsername(username) {
     .replace(/^[_-]+|[_-]+$/g, "");
   return s || "utente";
 }
-
 function hasRole(memberOrInteraction, roleId) {
   const member = memberOrInteraction?.member ?? memberOrInteraction;
   return member?.roles?.cache?.has(roleId);
 }
-
 function canCloseTicketFromMember(member) {
   if (!member) return false;
   if (member.permissions?.has?.(PermissionFlagsBits.Administrator)) return true;
   return member.roles?.cache?.has(TICKET_CLOSE_ROLE_ID);
 }
-
 function canCloseTicketFromInteraction(interaction) {
   return canCloseTicketFromMember(interaction?.member);
 }
-
 function isTicketChannel(channel) {
   return channel?.type === ChannelType.GuildText && typeof channel.name === "string" && channel.name.includes("ticket-");
 }
-
 function resolveTicketParentId(guild) {
   if (!TICKET_CATEGORY_ID) return null;
   const ch = guild.channels.cache.get(TICKET_CATEGORY_ID);
@@ -277,37 +256,31 @@ function resolveTicketParentId(guild) {
   if (ch.type !== ChannelType.GuildCategory) return null;
   return ch.id;
 }
-
 function channelNameForTicket(ticketType, username) {
   const u = sanitizeForChannelUsername(username);
   if (ticketType === "Braccio Armato") return `🔫・ticket-${u}`;
   if (ticketType === "Informativa") return `📄・ticket-${u}`;
   return `ticket-${u}`;
 }
-
 function topicForTicket(ticketType, userId) {
   return `**Categoria:** ${ticketType} | **Utente:** <@${userId}>`;
 }
-
 async function findExistingTicketFresh(guild, userId) {
   await guild.channels.fetch().catch(() => null);
   return guild.channels.cache.find(
     (c) => c?.type === ChannelType.GuildText && typeof c.topic === "string" && c.topic.includes(`<@${userId}>`)
   );
 }
-
 function extractUserIdFromTopic(topic) {
   if (!topic || typeof topic !== "string") return null;
   const m = topic.match(/<@(\d{17,20})>/);
   return m ? m[1] : null;
 }
-
 function extractCategoryFromTopic(topic) {
   if (!topic || typeof topic !== "string") return "Sconosciuta";
   const m = topic.match(/\*\*Categoria:\*\*\s*([^|]+)\s*\|/);
   return m ? m[1].trim() : "Sconosciuta";
 }
-
 function formatRomeHHMM(date = new Date()) {
   return new Intl.DateTimeFormat("it-IT", {
     timeZone: "Europe/Rome",
@@ -316,7 +289,6 @@ function formatRomeHHMM(date = new Date()) {
     hour12: false,
   }).format(date);
 }
-
 function lockUserOpen(userId, ttlMs = 15_000) {
   const now = Date.now();
   const last = openingInProcess.get(userId);
@@ -369,6 +341,7 @@ const CARD_W = 1200;
 const CARD_H = 450;
 
 let cachedWelcomeBg = null;
+
 async function loadWelcomeBackground() {
   if (!Canvas) return null;
   if (cachedWelcomeBg) return cachedWelcomeBg;
@@ -458,10 +431,9 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.restore();
   }
 
-  // testi come tua reference
   const title = mode === "goodbye" ? "GOODBYE!" : "WELCOME!";
   const rawName = (member.displayName || member.user.username || "USER").toUpperCase();
-  const nameLine = `.${rawName}..`; // stile .SHELL..
+  const nameLine = `.${rawName}..`;
   const memberCount = member.guild?.memberCount ?? 0;
 
   ctx.textAlign = "center";
@@ -489,48 +461,33 @@ async function renderWelcomeCard(member, mode = "welcome") {
   return canvas.toBuffer("image/png");
 }
 
-// ================== WELCOME MESSAGE (Components V2) ==================
-function buildWelcomeContainer({ guildName, userId, mode, fileName }) {
+// ✅ FIX: Components V2 container con MediaGallery CORRETTA (media.url)
+function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
   const title = mode === "goodbye" ? `Arrivederci • ${guildName}` : `Benvenuto • ${guildName}`;
   const line = mode === "goodbye"
-    ? `Goodbye <@${userId}>, grazie per essere stato in **${guildName}**.`
+    ? `Goodbye <@${userId}>, grazie per essere stato in **${guildName}**!`
     : `Hello <@${userId}>, welcome to **${guildName}**!`;
 
-  const canUseBuilders =
-    ContainerBuilder && TextDisplayBuilder && SeparatorBuilder && MediaGalleryBuilder && MediaGalleryItemBuilder;
-
-  if (canUseBuilders) {
-    // Media gallery: setURL('attachment://welcome.png') è il modo corretto per mostrare allegati dentro V2 [web:380]
-    const gallery = new MediaGalleryBuilder().addItems(
-      new MediaGalleryItemBuilder()
-        .setURL(`attachment://${fileName}`)
-        .setDescription("Welcome card")
-    );
-
-    return [
-      new ContainerBuilder()
-        .addComponents(
-          new TextDisplayBuilder().setContent(`# ${title}`),
-          new SeparatorBuilder().setSpacing(1).setDivider(false),
-          new TextDisplayBuilder().setContent(line),
-          new SeparatorBuilder().setSpacing(2).setDivider(true),
-          gallery,
-          new SeparatorBuilder().setSpacing(2).setDivider(true),
-          new TextDisplayBuilder().setContent(`-# Welcome System`)
-        ),
-    ];
-  }
-
-  // fallback raw (se non hai i builder)
   return [
     {
-      type: 17,
+      type: 17, // Container
       components: [
-        { type: 10, content: `# ${title}` },
-        { type: 14, divider: false, spacing: 1 },
-        { type: 10, content: line },
-        { type: 14, divider: true, spacing: 2 },
-        { type: 12, items: [{ description: "Welcome card", url: `attachment://${fileName}` }] }, // in alcune build Discord vuole "url" diretto
+        { type: 10, content: `# ${title}` }, // Text Display
+        { type: 14, divider: false, spacing: 1 }, // Separator
+        { type: 10, content: line }, // Text Display
+        { type: 14, divider: true, spacing: 2 }, // Separator
+
+        // Media Gallery (QUI era il punto che ti mancava)
+        {
+          type: 12,
+          items: [
+            {
+              description: "Welcome card",
+              media: { url: `attachment://${fileName}` },
+            },
+          ],
+        },
+
         { type: 14, divider: true, spacing: 2 },
         { type: 10, content: `-# Welcome System` },
       ],
@@ -538,14 +495,13 @@ function buildWelcomeContainer({ guildName, userId, mode, fileName }) {
   ];
 }
 
-async function sendWelcome(member, mode = "welcome") {
+async function sendWelcomeV2(member, mode = "welcome") {
   const channelId = mode === "goodbye" ? GOODBYE_CHANNEL_ID : WELCOME_CHANNEL_ID;
   if (!channelId) return;
 
   const ch = await member.guild.channels.fetch(channelId).catch(() => null);
   if (!ch || !ch.isTextBased?.()) return;
 
-  // lock anti doppio invio
   const lock = await acquireGlobalLock(`welcome:${mode}:${member.guild.id}:${member.id}`, 60_000);
   if (!lock.ok) return;
 
@@ -557,8 +513,8 @@ async function sendWelcome(member, mode = "welcome") {
     const file = new AttachmentBuilder(buf, { name: fileName });
 
     await ch.send({
-      flags: MessageFlags.IsComponentsV2,
-      components: buildWelcomeContainer({
+      flags: MessageFlags.IsComponentsV2, // 32768
+      components: buildWelcomeContainerV2({
         guildName: member.guild.name,
         userId: member.id,
         mode,
@@ -572,7 +528,7 @@ async function sendWelcome(member, mode = "welcome") {
   }
 }
 
-// ================== TICKET PANEL (come prima) ==================
+// ================== TICKET PANEL UI ==================
 function buildTicketPanelComponents() {
   const inner = [
     { type: 10, content: `# <:icona_ticket:1467182266554908953> Famiglia Gotti – Ticket Fazione` },
@@ -600,6 +556,7 @@ function buildTicketPanelComponents() {
   return [{ type: 17, components: inner }];
 }
 
+// ================== PANEL STATE ==================
 async function loadPanelState() {
   try {
     const raw = await fsp.readFile(PANEL_STATE_FILE, "utf8");
@@ -636,9 +593,11 @@ async function setPanelMessageId(guildId, channelId, messageId) {
   state[key] = messageId;
   await savePanelState(state);
 }
+
 async function upsertTicketPanel(channel) {
   const lock = await acquireGlobalLock(`panel:${channel.guild.id}:${channel.id}`, 10_000);
   if (!lock.ok) return null;
+
   try {
     const existingId = await getPanelMessageId(channel.guild.id, channel.id);
     if (existingId) {
@@ -648,11 +607,13 @@ async function upsertTicketPanel(channel) {
         return existing;
       }
     }
+
     const sent = await channel.send({
       flags: MessageFlags.IsComponentsV2,
       components: buildTicketPanelComponents(),
       allowedMentions: { parse: [] },
     });
+
     await setPanelMessageId(channel.guild.id, channel.id, sent.id);
     return sent;
   } finally {
@@ -707,6 +668,7 @@ async function saveTranscriptIndex() {
 async function cleanupOldTranscripts() {
   const now = Date.now();
   let changed = false;
+
   for (const [token, meta] of transcriptIndex.entries()) {
     const createdAt = Number(meta?.createdAt || 0);
     if (!createdAt) continue;
@@ -715,6 +677,7 @@ async function cleanupOldTranscripts() {
     transcriptIndex.delete(token);
     changed = true;
   }
+
   if (changed) await saveTranscriptIndex();
 }
 async function buildTranscriptHtml(channel) {
@@ -740,6 +703,7 @@ async function getLogChannel(guild) {
 function buildTicketLogV2Components({ ticketName, openerId, closedById, category, reason, closedAt, transcriptToken }) {
   const safeReason = (String(reason || "").trim() || "Nessuna motivazione fornita.").slice(0, 900);
   const hhmm = formatRomeHHMM(closedAt || new Date());
+
   const inner = [
     { type: 10, content: `# <:icona_ticket:1467182266554908953> Famiglia Gotti – Log Ticket` },
     { type: 14, divider: false, spacing: 1 },
@@ -751,20 +715,24 @@ function buildTicketLogV2Components({ ticketName, openerId, closedById, category
     { type: 14, divider: true, spacing: 2 },
     { type: 10, content: `-# **LOG Ticket by <@${LOG_FOOTER_USER_ID}> - Oggi alle ${hhmm}**` },
   ];
+
   if (transcriptToken) {
     inner.push(
       { type: 14, divider: true, spacing: 2 },
       { type: 1, components: [{ type: 2, style: 1, custom_id: `dl_tr:${transcriptToken}`, label: "⬇️・Scarica Transcript" }] }
     );
   }
+
   return [{ type: 17, components: inner }];
 }
 async function sendTicketLogOnce({ guild, uniqueKey, ...data }) {
   const lock = await acquireGlobalLock(`log:${uniqueKey}`, 30_000);
   if (!lock.ok) return;
+
   try {
     const logChannel = await getLogChannel(guild);
     if (!logChannel) return;
+
     await logChannel.send({
       flags: MessageFlags.IsComponentsV2,
       components: buildTicketLogV2Components(data),
@@ -803,6 +771,7 @@ async function closeTicketCore({ guild, channel, closedById, reason }) {
         const fileName = `${sanitizeForChannelUsername(ticketNameSnapshot)}.html`;
         const filePath = path.join(TRANSCRIPTS_DIR, `${transcriptToken}.html`);
         await fsp.writeFile(filePath, html, "utf8");
+
         transcriptIndex.set(transcriptToken, { file: filePath, name: fileName, createdAt: Date.now() });
         await cleanupOldTranscripts();
         await saveTranscriptIndex();
@@ -891,19 +860,21 @@ async function registerCommandsSafe() {
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
 }
 
-// ================== EVENTS (bind once) ==================
+// ================== EVENTS ==================
 function bindEventsOnce() {
   if (global.__FG_BOUND) return;
   global.__FG_BOUND = true;
 
+  // ✅ Welcome/Goodbye
   client.on("guildMemberAdd", async (member) => {
-    try { await sendWelcome(member, "welcome"); } catch (e) { console.error(e); }
+    try { await sendWelcomeV2(member, "welcome"); } catch (e) { console.error(e); }
   });
 
   client.on("guildMemberRemove", async (member) => {
-    try { await sendWelcome(member, "goodbye"); } catch (e) { console.error(e); }
+    try { await sendWelcomeV2(member, "goodbye"); } catch (e) { console.error(e); }
   });
 
+  // prefix commands
   client.on("messageCreate", async (msg) => {
     try {
       if (!msg.guild || msg.author.bot) return;
@@ -940,9 +911,10 @@ function bindEventsOnce() {
     }
   });
 
+  // interactions
   client.on("interactionCreate", async (interaction) => {
     try {
-      // Idempotenza: stessa interaction 2 volte => scarta la seconda
+      // Idempotenza interaction
       const idem = await acquireGlobalLock(`ix:${interaction.id}`, 20_000);
       if (!idem.ok) return;
 
