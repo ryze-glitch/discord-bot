@@ -475,7 +475,7 @@ async function tryAssignAutoJoinRole(member) {
   let lastErr = null;
   for (let i = 1; i <= 3; i++) {
     try {
-      await freshMember.roles.add(role, "Auto-ruolo ingresso");
+      await freshMember.roles.add(role, "Auto-Role - Fam. Gotti");
       const t = `✅ [AUTO-ROLE] Assegnato "${role.name}" a ${userTag} (try ${i}/3).`;
       console.log(t);
       await debugSend(guild, t);
@@ -1362,3 +1362,4 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
+
