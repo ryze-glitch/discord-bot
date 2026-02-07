@@ -54,12 +54,15 @@ const GUILD_ID = process.env.GUILD_ID;
 const PREFIX = process.env.PREFIX || "!";
 const BANNER_URL = process.env.BANNER_URL || process.env.IMAGE_URL || "";
 
-// ✅ LOG TICKET: default aggiornato
+// ✅ LOG TICKET (default aggiornato)
 const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID || "1469797954381418659";
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID || null;
 
-// ✅ Pannello ticket consentito SOLO in questo canale (mettilo nei secrets)
+// ✅ Pannello ticket consentito SOLO in questo canale
 const TICKET_PANEL_CHANNEL_ID = process.env.TICKET_PANEL_CHANNEL_ID || "";
+
+// ✅ DEBUG (opzionale) per capire perché non mette il ruolo
+const AUTO_ROLE_DEBUG_CHANNEL_ID = process.env.AUTO_ROLE_DEBUG_CHANNEL_ID || "";
 
 const ALWAYS_OPEN_ROLE_ID = process.env.ALWAYS_OPEN_ROLE_ID || "1463112389296918599";
 const TICKET_CLOSE_ROLE_ID = process.env.TICKET_CLOSE_ROLE_ID || "1461816600733815090";
@@ -72,7 +75,7 @@ const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
 
-// ✅ Ruolo auto-assegnato all’ingresso
+// ✅ Ruolo auto-assegnato all’ingresso (quello richiesto)
 const AUTO_JOIN_ROLE_ID = process.env.AUTO_JOIN_ROLE_ID || "1466504639682973940";
 
 // ✅ Base banner (1200x450)
@@ -242,7 +245,7 @@ async function acquireInstanceLockOrExit() {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers, // richiesto per guildMemberAdd
+    GatewayIntentBits.GuildMembers, // necessario per guildMemberAdd
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -254,6 +257,17 @@ const closingInProcess = new Set();
 const openingInProcess = new Map();
 
 // ================== HELPERS ==================
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function debugSend(guild, text) {
+  if (!AUTO_ROLE_DEBUG_CHANNEL_ID) return;
+  const ch = await guild.channels.fetch(AUTO_ROLE_DEBUG_CHANNEL_ID).catch(() => null);
+  if (!ch || !ch.isTextBased?.()) return;
+  await ch.send({ content: text.slice(0, 1900) }).catch(() => {});
+}
+
 function isValidHttpUrl(url) {
   if (!url || typeof url !== "string") return false;
   try {
@@ -401,6 +415,87 @@ function lockUserOpen(userId, ttlMs = 15_000) {
     if (v === now) openingInProcess.delete(userId);
   }, ttlMs).unref?.();
   return true;
+}
+
+// ================== AUTO ROLE (robusto + debug) ==================
+async function tryAssignAutoJoinRole(member) {
+  if (!AUTO_JOIN_ROLE_ID) return;
+
+  const guild = member.guild;
+  const userTag = `${member.user?.tag ?? member.id}`;
+
+  // Piccola attesa: a volte il join arriva “presto” e la cache/permessi non sono ancora pronti
+  await sleep(1200);
+
+  // Forza fetch del member (stato fresco)
+  const freshMember = await guild.members.fetch(member.id).catch(() => member);
+
+  const role = await guild.roles.fetch(AUTO_JOIN_ROLE_ID).catch(() => null);
+  if (!role) {
+    const t = `❌ [AUTO-ROLE] Ruolo non trovato: ${AUTO_JOIN_ROLE_ID}`;
+    console.log(t);
+    await debugSend(guild, t);
+    return;
+  }
+
+  const me = guild.members.me || (await guild.members.fetchMe().catch(() => null));
+  if (!me) {
+    const t = `❌ [AUTO-ROLE] Non riesco a fetchare il bot member in guild.`;
+    console.log(t);
+    await debugSend(guild, t);
+    return;
+  }
+
+  // Check permessi base
+  const hasAdmin = me.permissions.has(PermissionFlagsBits.Administrator);
+  const hasManageRoles = me.permissions.has(PermissionFlagsBits.ManageRoles);
+  if (!hasAdmin && !hasManageRoles) {
+    const t = `❌ [AUTO-ROLE] Il bot non ha Administrator/ManageRoles. user=${userTag}`;
+    console.log(t);
+    await debugSend(guild, t);
+    return;
+  }
+
+  // Check gerarchia/role.editable (se false, è quasi sempre “ruolo sopra al bot” o permessi mancanti)
+  if (!role.editable) {
+    const t =
+      `❌ [AUTO-ROLE] Il ruolo "${role.name}" (${role.id}) NON è editable dal bot.\n` +
+      `Bot highest role: "${me.roles.highest?.name}" pos=${me.roles.highest?.position}\n` +
+      `Target role pos=${role.position}\n` +
+      `Soluzione: sposta il ruolo del bot sopra "${role.name}" nella gerarchia ruoli.`;
+    console.log(t);
+    await debugSend(guild, t);
+    return;
+  }
+
+  // Già presente?
+  if (freshMember.roles.cache.has(role.id)) return;
+
+  // Retry: 3 tentativi
+  let lastErr = null;
+  for (let i = 1; i <= 3; i++) {
+    try {
+      await freshMember.roles.add(role, "Auto-ruolo ingresso");
+      const t = `✅ [AUTO-ROLE] Assegnato "${role.name}" a ${userTag} (try ${i}/3).`;
+      console.log(t);
+      await debugSend(guild, t);
+      return;
+    } catch (e) {
+      lastErr = e;
+      const code = e?.code ? ` code=${e.code}` : "";
+      const msg = e?.message ? ` msg=${e.message}` : "";
+      const t = `❌ [AUTO-ROLE] Fallito roles.add (try ${i}/3) user=${userTag}${code}${msg}`;
+      console.log(t);
+      await debugSend(guild, t);
+      await sleep(900);
+    }
+  }
+
+  if (lastErr) {
+    const t = `❌ [AUTO-ROLE] Definitivamente fallito per ${userTag}. Controlla gerarchia ruoli e permessi.`;
+    console.log(t);
+    await debugSend(guild, t);
+  }
 }
 
 // ================== SUPPORT HOURS ==================
@@ -966,7 +1061,7 @@ async function closeTicketCore({ guild, channel, closedById, reason }) {
     try {
       const html = await buildTranscriptHtml(channel);
       if (html) {
-        transcriptToken = crypto.randomBytes(8).toString("hex");
+        transcriptToken = makeToken();
         const fileName = `${sanitizeForChannelUsername(ticketNameSnapshot)}.html`;
         const filePath = path.join(TRANSCRIPTS_DIR, `${transcriptToken}.html`);
         await fsp.writeFile(filePath, html, "utf8");
@@ -1066,28 +1161,10 @@ function bindEventsOnce() {
 
   client.on("guildMemberAdd", async (member) => {
     try {
-      // ✅ auto-ruolo ingresso (con check gerarchia + debug)
-      if (AUTO_JOIN_ROLE_ID) {
-        const role = await member.guild.roles.fetch(AUTO_JOIN_ROLE_ID).catch(() => null);
-        if (!role) {
-          console.log(`❌ AUTO_JOIN_ROLE_ID non trovato: ${AUTO_JOIN_ROLE_ID}`);
-        } else {
-          const me = member.guild.members.me || (await member.guild.members.fetchMe().catch(() => null));
-          const myHighest = me?.roles?.highest?.position ?? -1;
+      // ✅ prima prova assegnazione ruolo richiesto
+      await tryAssignAutoJoinRole(member);
 
-          // se il ruolo è sopra/uguale al bot -> Discord rifiuta (Missing Permissions) [web:1085]
-          if (role.position >= myHighest) {
-            console.log(
-              `❌ Ruolo troppo alto in gerarchia: target="${role.name}" (${role.position}) botHighest=${myHighest}. Sposta il ruolo del bot sopra.`
-            );
-          } else {
-            await member.roles.add(role, "Auto-ruolo ingresso").catch((e) => {
-              console.log("❌ member.roles.add errore:", e?.code || e?.message || e);
-            });
-          }
-        }
-      }
-
+      // ✅ poi benvenuto
       await sendWelcomeV2(member);
     } catch (e) {
       console.error("guildMemberAdd error:", e);
@@ -1258,6 +1335,20 @@ function bindEventsOnce() {
 // ================== READY ==================
 client.once("ready", async () => {
   console.log(`Online: ${client.user.tag}`);
+
+  // Debug iniziale (una volta): mostra subito se il ruolo è assegnabile
+  const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (guild && AUTO_JOIN_ROLE_ID) {
+    const me = guild.members.me || (await guild.members.fetchMe().catch(() => null));
+    const role = await guild.roles.fetch(AUTO_JOIN_ROLE_ID).catch(() => null);
+    if (me && role) {
+      const t =
+        `ℹ️ [BOOT] Auto-role target="${role.name}" pos=${role.position} editable=${role.editable}\n` +
+        `ℹ️ [BOOT] Bot highest="${me.roles.highest?.name}" pos=${me.roles.highest?.position}`;
+      console.log(t);
+      await debugSend(guild, t);
+    }
+  }
 });
 
 // ================== START ==================
