@@ -57,7 +57,7 @@ const BANNER_URL = process.env.BANNER_URL || process.env.IMAGE_URL || "";
 const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID || "1467257072243703828";
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID || null;
 
-// ✅ Pannello ticket consentito SOLO in questo canale
+// ✅ Pannello ticket consentito SOLO in questo canale (mettilo nei secrets)
 const TICKET_PANEL_CHANNEL_ID = process.env.TICKET_PANEL_CHANNEL_ID || "";
 
 const ALWAYS_OPEN_ROLE_ID = process.env.ALWAYS_OPEN_ROLE_ID || "1463112389296918599";
@@ -83,6 +83,9 @@ const WELCOME_FONT_FAMILY = process.env.WELCOME_FONT_FAMILY || "Lexend";
 
 // Redis (opzionale)
 const REDIS_URL = process.env.REDIS_URL || "";
+
+// ✅ Emoji custom per titolo welcome
+const WELCOME_TITLE_EMOJI = "<:icona_ticket:1467182266554908953>";
 
 // ================== CHECK ==================
 if (!TOKEN) throw new Error("DISCORD_TOKEN mancante nel .env");
@@ -318,7 +321,6 @@ function isAdmin(memberOrInteraction) {
 }
 
 async function notifyUserPrivate(msg, text) {
-  // Provo a mantenere "solo per chi lancia il comando"
   await msg.delete().catch(() => {});
   const dmOk = await msg.author.send(text).then(() => true).catch(() => false);
   if (!dmOk) {
@@ -640,7 +642,9 @@ async function renderWelcomeBanner(member) {
   const name = (member.displayName || member.user.username || "UTENTE").toUpperCase();
 
   const memberNumber = await getFreshMemberCount(member.guild);
-  const countLine = `Sei il membro numero ${memberNumber}`;
+
+  // ✅ riga finale aggiornata (N° + numero)
+  const countLine = `Sei il Membro N° ${memberNumber}`;
 
   drawCenteredText(ctx, title, cx, 265, `900 86px "${family}"`, "#ffffff", "rgba(0,0,0,0.45)", 8, true);
 
@@ -658,9 +662,11 @@ function buildWelcomeContainerV2({ userId, fileName, hhmm }) {
     {
       type: 17,
       components: [
-        { type: 10, content: `# **Fam. Gotti - Sez. Benvenuto**` },
+        // ✅ titolo con emoji custom davanti
+        { type: 10, content: `# ${WELCOME_TITLE_EMOJI} **Fam. Gotti - Sez. Benvenuto**` },
         { type: 14, divider: false, spacing: 1 },
-        { type: 10, content: `Ciao <@${userId}>, benvenuto!` },
+        // ✅ testo richiesto
+        { type: 10, content: `Ciao! <@${userId}>, benvenuto nel **Server Discord della Famiglia Gotti.**` },
         { type: 14, divider: true, spacing: 2 },
         { type: 12, items: [{ description: "Welcome banner", media: { url: `attachment://${fileName}` } }] },
         { type: 14, divider: true, spacing: 2 },
@@ -709,10 +715,12 @@ async function sendGoodbyeSimple(member) {
   const userId = member.user?.id || member.id;
   const guildName = member.guild?.name || "questo server";
 
-  await ch.send({
-    content: `Addio, <@${userId}> ha **Abbandonato la ${guildName}.**`,
-    allowedMentions: { users: [userId], roles: [], repliedUser: false },
-  }).catch(() => {});
+  await ch
+    .send({
+      content: `Addio, <@${userId}> ha **Abbandonato la ${guildName}.**`,
+      allowedMentions: { users: [userId], roles: [], repliedUser: false },
+    })
+    .catch(() => {});
 }
 
 // ================== TICKET PANEL UI ==================
@@ -740,7 +748,6 @@ function buildTicketPanelComponents() {
         { type: 2, style: 3, custom_id: "ticket_btn_wl", label: "🛠️・Ticket Fazionati", disabled: true },
       ],
     },
-    // ✅ divider + footer sotto pulsanti
     { type: 14, divider: true, spacing: 2 },
     { type: 10, content: `-# 📦・**Sistema di Ticket by Ryze - Oggi alle ${hhmm}**` }
   );
@@ -1097,7 +1104,6 @@ function bindEventsOnce() {
       }
 
       if (cmd === "ticketpanel") {
-        // ✅ solo nel canale specifico
         if (TICKET_PANEL_CHANNEL_ID && msg.channel.id !== TICKET_PANEL_CHANNEL_ID) {
           await notifyUserPrivate(msg, "❌ Non è possibile inviare/aggiornare il pannello ticket in questo canale.");
           return;
@@ -1109,7 +1115,6 @@ function bindEventsOnce() {
       if (cmd === "chiudi") {
         if (!isTicketChannel(msg.channel)) return;
 
-        // (sei admin quindi ok)
         await msg.reply("⏳ Chiusura ticket in corso...").catch(() => {});
         await closeTicketCore({
           guild: msg.guild,
@@ -1128,10 +1133,11 @@ function bindEventsOnce() {
       const idem = await acquireGlobalLock(`ix:${interaction.id}`, 20_000);
       if (!idem.ok) return;
 
-      // ✅ /ticketpanel: SOLO admin + SOLO canale specifico
       if (interaction.isChatInputCommand() && interaction.commandName === "ticketpanel") {
         if (!interaction.memberPermissions?.has?.(PermissionFlagsBits.Administrator)) {
-          await interaction.reply({ content: "❌ Solo gli **Amministratori** possono usare questo comando.", flags: MessageFlags.Ephemeral }).catch(() => {});
+          await interaction
+            .reply({ content: "❌ Solo gli **Amministratori** possono usare questo comando.", flags: MessageFlags.Ephemeral })
+            .catch(() => {});
           return;
         }
         if (TICKET_PANEL_CHANNEL_ID && interaction.channelId !== TICKET_PANEL_CHANNEL_ID) {
@@ -1146,7 +1152,6 @@ function bindEventsOnce() {
       }
 
       if (interaction.isButton() && String(interaction.customId).startsWith("dl_tr:")) {
-        // (lascio libero, se vuoi lo limitiamo agli admin dimmelo)
         const token = interaction.customId.split(":")[1] || "";
         const meta = transcriptIndex.get(token);
 
