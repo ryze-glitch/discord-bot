@@ -54,7 +54,8 @@ const GUILD_ID = process.env.GUILD_ID;
 const PREFIX = process.env.PREFIX || "!";
 const BANNER_URL = process.env.BANNER_URL || process.env.IMAGE_URL || "";
 
-const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID || "1467257072243703828";
+// ✅ LOG TICKET: default aggiornato
+const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID || "1469797954381418659";
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID || null;
 
 // ✅ Pannello ticket consentito SOLO in questo canale (mettilo nei secrets)
@@ -241,7 +242,7 @@ async function acquireInstanceLockOrExit() {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMembers, // richiesto per guildMemberAdd
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -642,8 +643,6 @@ async function renderWelcomeBanner(member) {
   const name = (member.displayName || member.user.username || "UTENTE").toUpperCase();
 
   const memberNumber = await getFreshMemberCount(member.guild);
-
-  // ✅ riga finale aggiornata (N° + numero)
   const countLine = `Sei il Membro N° ${memberNumber}`;
 
   drawCenteredText(ctx, title, cx, 265, `900 86px "${family}"`, "#ffffff", "rgba(0,0,0,0.45)", 8, true);
@@ -662,10 +661,8 @@ function buildWelcomeContainerV2({ userId, fileName, hhmm }) {
     {
       type: 17,
       components: [
-        // ✅ titolo con emoji custom davanti
         { type: 10, content: `# ${WELCOME_TITLE_EMOJI} **Fam. Gotti - Sez. Benvenuto**` },
         { type: 14, divider: false, spacing: 1 },
-        // ✅ testo richiesto
         { type: 10, content: `Ciao! <@${userId}>, benvenuto nel **Server Discord della Famiglia Gotti.**` },
         { type: 14, divider: true, spacing: 2 },
         { type: 12, items: [{ description: "Welcome banner", media: { url: `attachment://${fileName}` } }] },
@@ -969,7 +966,7 @@ async function closeTicketCore({ guild, channel, closedById, reason }) {
     try {
       const html = await buildTranscriptHtml(channel);
       if (html) {
-        transcriptToken = makeToken();
+        transcriptToken = crypto.randomBytes(8).toString("hex");
         const fileName = `${sanitizeForChannelUsername(ticketNameSnapshot)}.html`;
         const filePath = path.join(TRANSCRIPTS_DIR, `${transcriptToken}.html`);
         await fsp.writeFile(filePath, html, "utf8");
@@ -1054,7 +1051,7 @@ async function createTicketChannel(interaction, ticketType) {
 
 // ================== SLASH COMMANDS ==================
 const commands = [
-  new SlashCommandBuilder().setName("ticketpanel").setDescription("Pannello Ticket - Fam. Gotti"),
+  new SlashCommandBuilder().setName("ticketpanel").setDescription("Invia/aggiorna il pannello ticket (senza duplicati)"),
 ].map((c) => c.toJSON());
 
 async function registerCommandsSafe() {
@@ -1069,12 +1066,31 @@ function bindEventsOnce() {
 
   client.on("guildMemberAdd", async (member) => {
     try {
+      // ✅ auto-ruolo ingresso (con check gerarchia + debug)
       if (AUTO_JOIN_ROLE_ID) {
-        await member.roles.add(AUTO_JOIN_ROLE_ID, "Auto-ruolo ingresso").catch(() => {});
+        const role = await member.guild.roles.fetch(AUTO_JOIN_ROLE_ID).catch(() => null);
+        if (!role) {
+          console.log(`❌ AUTO_JOIN_ROLE_ID non trovato: ${AUTO_JOIN_ROLE_ID}`);
+        } else {
+          const me = member.guild.members.me || (await member.guild.members.fetchMe().catch(() => null));
+          const myHighest = me?.roles?.highest?.position ?? -1;
+
+          // se il ruolo è sopra/uguale al bot -> Discord rifiuta (Missing Permissions) [web:1085]
+          if (role.position >= myHighest) {
+            console.log(
+              `❌ Ruolo troppo alto in gerarchia: target="${role.name}" (${role.position}) botHighest=${myHighest}. Sposta il ruolo del bot sopra.`
+            );
+          } else {
+            await member.roles.add(role, "Auto-ruolo ingresso").catch((e) => {
+              console.log("❌ member.roles.add errore:", e?.code || e?.message || e);
+            });
+          }
+        }
       }
+
       await sendWelcomeV2(member);
     } catch (e) {
-      console.error(e);
+      console.error("guildMemberAdd error:", e);
     }
   });
 
@@ -1096,7 +1112,6 @@ function bindEventsOnce() {
       const cmd = (cmdRaw || "").toLowerCase();
       const reason = rest.join(" ").trim();
 
-      // ✅ tutti i comandi testuali: SOLO Amministratori
       const member = await msg.guild.members.fetch(msg.author.id).catch(() => null);
       if (!member || !isAdmin(member)) {
         await notifyUserPrivate(msg, "❌ Solo gli **Amministratori** possono usare i comandi del bot in chat.");
@@ -1135,9 +1150,7 @@ function bindEventsOnce() {
 
       if (interaction.isChatInputCommand() && interaction.commandName === "ticketpanel") {
         if (!interaction.memberPermissions?.has?.(PermissionFlagsBits.Administrator)) {
-          await interaction
-            .reply({ content: "❌ Solo gli **Amministratori** possono usare questo comando.", flags: MessageFlags.Ephemeral })
-            .catch(() => {});
+          await interaction.reply({ content: "❌ Solo gli **Amministratori** possono usare questo comando.", flags: MessageFlags.Ephemeral }).catch(() => {});
           return;
         }
         if (TICKET_PANEL_CHANNEL_ID && interaction.channelId !== TICKET_PANEL_CHANNEL_ID) {
@@ -1258,4 +1271,3 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
-
