@@ -7,6 +7,7 @@ const fsp = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
+const https = require("https");
 
 const {
   Client,
@@ -68,9 +69,15 @@ const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
 
-// 👇 metti qui il tuo banner. Se usi "https://imgur.com/0F553GO" il codice lo converte in direct-link.
+// 🔥 tuo banner (puoi mettere anche https://imgur.com/0F553GO)
 const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://imgur.com/0F553GO";
 const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";
+
+// Font (auto-download)
+const WELCOME_FONT_URL =
+  process.env.WELCOME_FONT_URL ||
+  "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf"; // open font repo
+const WELCOME_FONT_FAMILY = process.env.WELCOME_FONT_FAMILY || "WelcomeFont";
 
 // Redis (opzionale)
 const REDIS_URL = process.env.REDIS_URL || "";
@@ -102,6 +109,9 @@ const PANEL_STATE_FILE = path.join(BASE_DATA_DIR, "panel_state.json");
 const TRANSCRIPTS_DIR = path.join(BASE_DATA_DIR, "transcripts");
 const TRANSCRIPTS_INDEX_FILE = path.join(BASE_DATA_DIR, "transcripts_index.json");
 
+const FONTS_DIR = path.join(BASE_DATA_DIR, "fonts");
+const WELCOME_FONT_PATH = path.join(FONTS_DIR, "welcome-font.ttf");
+
 const LOCK_TTL_MS = 20_000;
 const TRANSCRIPT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -110,23 +120,70 @@ function ensureDirsSync() {
   fs.mkdirSync(LOCKS_DIR, { recursive: true });
   fs.mkdirSync(IDEM_DIR, { recursive: true });
   fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
+  fs.mkdirSync(FONTS_DIR, { recursive: true });
 }
 ensureDirsSync();
 
+// ================== SMALL NET HELPERS ==================
+function downloadToFile(url, destPath) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath);
+    const req = https.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        file.close(() => {
+          fs.unlink(destPath, () => {});
+          downloadToFile(res.headers.location, destPath).then(resolve).catch(reject);
+        });
+        return;
+      }
+
+      if (res.statusCode !== 200) {
+        file.close(() => {
+          fs.unlink(destPath, () => {});
+          reject(new Error(`HTTP ${res.statusCode} downloading ${url}`));
+        });
+        return;
+      }
+
+      res.pipe(file);
+      file.on("finish", () => file.close(resolve));
+    });
+
+    req.on("error", (err) => {
+      file.close(() => {
+        fs.unlink(destPath, () => {});
+        reject(err);
+      });
+    });
+  });
+}
+
 // ================== LOCK UTILS ==================
 function isPidAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
+
 function readPidFromLockDir(lockDir) {
   try {
     const p = fs.readFileSync(path.join(lockDir, "pid.txt"), "utf8").trim();
     const pid = Number(p);
     return Number.isFinite(pid) ? pid : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
+
 function removeDirSync(p) {
-  try { fs.rmSync(p, { recursive: true, force: true }); } catch {}
+  try {
+    fs.rmSync(p, { recursive: true, force: true });
+  } catch {}
 }
+
 async function acquireDirLock(baseDir, key, ttlMs = LOCK_TTL_MS) {
   const safe = String(key).replace(/[^a-zA-Z0-9_-]/g, "_");
   const lockPath = path.join(baseDir, safe);
@@ -145,10 +202,12 @@ async function acquireDirLock(baseDir, key, ttlMs = LOCK_TTL_MS) {
     return { ok: false, path: lockPath };
   }
 }
+
 async function releaseDirLock(lockPath) {
   if (!lockPath) return;
   await fsp.rm(lockPath, { recursive: true, force: true }).catch(() => {});
 }
+
 async function acquireGlobalLock(key, ttlMs = LOCK_TTL_MS) {
   if (redis) {
     try {
@@ -190,16 +249,30 @@ async function acquireInstanceLockOrExit() {
     removeDirSync(INSTANCE_LOCK_DIR);
   };
 
-  process.on("SIGINT", () => { cleanup(); process.exit(0); });
-  process.on("SIGTERM", () => { cleanup(); process.exit(0); });
+  process.on("SIGINT", () => {
+    cleanup();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    cleanup();
+    process.exit(0);
+  });
 
   process.once("SIGUSR2", () => {
     cleanup();
     process.kill(process.pid, "SIGUSR2");
   });
 
-  process.on("uncaughtException", (e) => { console.error(e); cleanup(); process.exit(1); });
-  process.on("unhandledRejection", (e) => { console.error(e); cleanup(); process.exit(1); });
+  process.on("uncaughtException", (e) => {
+    console.error(e);
+    cleanup();
+    process.exit(1);
+  });
+  process.on("unhandledRejection", (e) => {
+    console.error(e);
+    cleanup();
+    process.exit(1);
+  });
 }
 
 // ================== CLIENT ==================
@@ -228,10 +301,8 @@ function isValidHttpUrl(url) {
   }
 }
 
-function normalizeImgurToDirect(url) {
-  // Se metti https://imgur.com/ID, Canvas spesso non lo carica.
-  // Converte a https://i.imgur.com/ID.jpg (puoi cambiare estensione se serve).
-  if (!url || typeof url !== "string") return url;
+function normalizeImgurToDirectCandidates(url) {
+  if (!url || typeof url !== "string") return [url];
   const u = url.trim();
 
   try {
@@ -239,23 +310,33 @@ function normalizeImgurToDirect(url) {
     const host = parsed.hostname.toLowerCase();
     const parts = parsed.pathname.split("/").filter(Boolean);
 
-    // imgur.com/ABC123 oppure www.imgur.com/ABC123
+    // imgur.com/ID -> i.imgur.com/ID.(jpg|jpeg|png)
     if ((host === "imgur.com" || host === "www.imgur.com") && parts.length >= 1) {
       const id = parts[0];
       if (id && !id.includes(".") && id !== "a" && id !== "gallery") {
-        return `https://i.imgur.com/${id}.jpg`;
+        return [
+          `https://i.imgur.com/${id}.jpg`,
+          `https://i.imgur.com/${id}.jpeg`,
+          `https://i.imgur.com/${id}.png`,
+        ];
       }
     }
 
-    // i.imgur.com/ABC123 (senza estensione) => aggiungi jpg
+    // i.imgur.com/ID (senza estensione)
     if (host === "i.imgur.com" && parts.length >= 1) {
       const last = parts[parts.length - 1];
-      if (last && !last.includes(".")) return `https://i.imgur.com/${last}.jpg`;
+      if (last && !last.includes(".")) {
+        return [
+          `https://i.imgur.com/${last}.jpg`,
+          `https://i.imgur.com/${last}.jpeg`,
+          `https://i.imgur.com/${last}.png`,
+        ];
+      }
     }
 
-    return u;
+    return [u];
   } catch {
-    return u;
+    return [u];
   }
 }
 
@@ -382,8 +463,30 @@ const CLOSED_MESSAGE =
   "- Domenica: 10:30 - 00:00\n\n" +
   `**Per Aprire Ticket anche al di fuori degli Orari di Supporto Acquista ora l'@&${ALWAYS_OPEN_ROLE_ID} a 4,99€ per ottenere assistenza rapida senza tempi di Attesa per qualsiasi tipo di problema o richiesta!**`;
 
+// ================== WELCOME FONT (AUTO) ==================
+let __WELCOME_FONT_READY = false;
+
+async function ensureWelcomeFont() {
+  if (__WELCOME_FONT_READY) return;
+  if (!Canvas || !Canvas.GlobalFonts) {
+    __WELCOME_FONT_READY = true; // non posso fare altro
+    return;
+  }
+
+  try {
+    if (!fs.existsSync(WELCOME_FONT_PATH)) {
+      await downloadToFile(WELCOME_FONT_URL, WELCOME_FONT_PATH);
+    }
+    Canvas.GlobalFonts.registerFromPath(WELCOME_FONT_PATH, WELCOME_FONT_FAMILY);
+  } catch (e) {
+    console.error("⚠️ Font download/register fallito:", e?.message || e);
+  } finally {
+    __WELCOME_FONT_READY = true;
+  }
+}
+
 // ================== WELCOME CARD (Canvas) ==================
-// ✅ come la tua 1ª foto: 1200x450, WELCOME + nome rosso + member #
+// come la tua immagine: 1200x450, avatar + WELCOME + nome rosso + member #
 const CARD_W = 1200;
 const CARD_H = 450;
 
@@ -393,18 +496,27 @@ async function loadWelcomeBackground() {
   if (!Canvas) return null;
   if (cachedWelcomeBg) return cachedWelcomeBg;
 
-  let src = (WELCOME_BG_PATH && WELCOME_BG_PATH.trim()) ? WELCOME_BG_PATH.trim() : (WELCOME_BG_URL || "").trim();
-  src = normalizeImgurToDirect(src);
-
-  if (!src) return null;
-
-  try {
-    cachedWelcomeBg = await Canvas.loadImage(src);
-    return cachedWelcomeBg;
-  } catch (e) {
-    console.error("❌ Errore loadImage background:", src, e?.message || e);
-    return null;
+  const srcLocal = (WELCOME_BG_PATH && WELCOME_BG_PATH.trim()) ? WELCOME_BG_PATH.trim() : null;
+  if (srcLocal) {
+    try {
+      cachedWelcomeBg = await Canvas.loadImage(srcLocal);
+      return cachedWelcomeBg;
+    } catch (e) {
+      console.error("❌ Errore loadImage background (path):", srcLocal, e?.message || e);
+    }
   }
+
+  const candidates = normalizeImgurToDirectCandidates((WELCOME_BG_URL || "").trim());
+  for (const u of candidates) {
+    if (!u) continue;
+    try {
+      cachedWelcomeBg = await Canvas.loadImage(u);
+      return cachedWelcomeBg;
+    } catch {}
+  }
+
+  console.error("❌ Non riesco a caricare WELCOME_BG_URL:", WELCOME_BG_URL);
+  return null;
 }
 
 function drawCover(ctx, img, x, y, w, h) {
@@ -422,20 +534,44 @@ function fitFont(ctx, text, maxWidth, startPx, minPx, weight = 900, family = "sa
   const t = String(text ?? "");
   let size = startPx;
   while (size > minPx) {
-    ctx.font = `${weight} ${size}px ${family}`;
+    ctx.font = `${weight} ${size}px "${family}"`;
     if (ctx.measureText(t).width <= maxWidth) return size;
     size -= 2;
   }
   return minPx;
 }
 
+function drawCenteredText(ctx, text, x, y, font, fill, stroke, strokeW, shadow = true) {
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = font;
+
+  if (shadow) {
+    ctx.shadowColor = "rgba(0,0,0,0.55)";
+    ctx.shadowBlur = 16;
+    ctx.shadowOffsetY = 6;
+  }
+
+  if (stroke) {
+    ctx.lineWidth = strokeW;
+    ctx.strokeStyle = stroke;
+    ctx.strokeText(text, x, y);
+  }
+
+  ctx.fillStyle = fill;
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
 async function renderWelcomeCard(member, mode = "welcome") {
   if (!Canvas) return null;
+
+  await ensureWelcomeFont();
 
   const canvas = Canvas.createCanvas(CARD_W, CARD_H);
   const ctx = canvas.getContext("2d");
 
-  // bg
   const bg = await loadWelcomeBackground();
   if (bg) {
     drawCover(ctx, bg, 0, 0, CARD_W, CARD_H);
@@ -447,7 +583,7 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.fillRect(0, 0, CARD_W, CARD_H);
   }
 
-  // overlay leggero (per leggibilità sul tuo banner)
+  // overlay leggero
   ctx.fillStyle = "rgba(0,0,0,0.18)";
   ctx.fillRect(0, 0, CARD_W, CARD_H);
 
@@ -460,14 +596,12 @@ async function renderWelcomeCard(member, mode = "welcome") {
   const cy = 115;
   const r = 78;
 
-  // ring bianco
   ctx.beginPath();
   ctx.arc(cx, cy, r + 10, 0, Math.PI * 2);
   ctx.closePath();
   ctx.fillStyle = "rgba(255,255,255,0.95)";
   ctx.fill();
 
-  // ring interno
   ctx.beginPath();
   ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
   ctx.closePath();
@@ -484,37 +618,52 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.restore();
   }
 
+  // testi (uguali alla tua reference)
   const title = mode === "goodbye" ? "GOODBYE!" : "WELCOME!";
-  const rawName = (member.displayName || member.user.username || "USER").toUpperCase();
+  const name = (member.displayName || member.user.username || "USER").toUpperCase();
   const memberCount = member.guild?.memberCount ?? 0;
 
-  // title
-  ctx.textAlign = "center";
-  ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = "#ffffff";
-  ctx.shadowColor = "rgba(0,0,0,0.60)";
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 6;
-  ctx.font = "900 86px sans-serif";
-  ctx.fillText(title, cx, 265);
+  const family = WELCOME_FONT_FAMILY || "sans-serif";
 
-  // name (rosso)
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-  const nameSize = fitFont(ctx, rawName, 1050, 64, 28, 900, "sans-serif");
-  ctx.font = `900 ${nameSize}px sans-serif`;
-  ctx.fillStyle = "#ff2b2b";
-  ctx.shadowColor = "rgba(0,0,0,0.55)";
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetY = 4;
-  ctx.fillText(rawName, cx, 330);
+  // WELCOME
+  drawCenteredText(
+    ctx,
+    title,
+    cx,
+    265,
+    `900 86px "${family}"`,
+    "#ffffff",
+    "rgba(0,0,0,0.45)",
+    8,
+    true
+  );
 
-  // member count
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-  ctx.font = "600 30px sans-serif";
-  ctx.fillStyle = "rgba(255,255,255,0.88)";
-  ctx.fillText(`You are the member #${memberCount}`, cx, 382);
+  // NAME (rosso)
+  const nameSize = fitFont(ctx, name, 1050, 64, 28, 900, family);
+  drawCenteredText(
+    ctx,
+    name,
+    cx,
+    330,
+    `900 ${nameSize}px "${family}"`,
+    "#ff2b2b",
+    "rgba(0,0,0,0.50)",
+    7,
+    true
+  );
+
+  // member #
+  drawCenteredText(
+    ctx,
+    `You are the member #${memberCount}`,
+    cx,
+    382,
+    `700 30px "${family}"`,
+    "rgba(255,255,255,0.88)",
+    "rgba(0,0,0,0.35)",
+    5,
+    false
+  );
 
   return canvas.toBuffer("image/png");
 }
@@ -534,6 +683,8 @@ function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
         { type: 14, divider: false, spacing: 1 },
         { type: 10, content: line },
         { type: 14, divider: true, spacing: 2 },
+
+        // ✅ media gallery: attachment://... [page:0][page:1]
         {
           type: 12,
           items: [
@@ -543,6 +694,7 @@ function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
             },
           ],
         },
+
         { type: 14, divider: true, spacing: 2 },
         { type: 10, content: `-# Welcome System` },
       ],
@@ -648,7 +800,6 @@ async function setPanelMessageId(guildId, channelId, messageId) {
   state[key] = messageId;
   await savePanelState(state);
 }
-
 async function upsertTicketPanel(channel) {
   const lock = await acquireGlobalLock(`panel:${channel.guild.id}:${channel.id}`, 10_000);
   if (!lock.ok) return null;
