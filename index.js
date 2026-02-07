@@ -68,7 +68,7 @@ const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
 
-// Sfondo welcome (imgur page ok, il codice lo converte in i.imgur.com)
+// ✅ Banner/sfondo richiesto
 const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://imgur.com/0F553GO";
 const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";
 
@@ -254,6 +254,7 @@ function isValidHttpUrl(url) {
   }
 }
 
+// converte imgur.com/ID -> i.imgur.com/ID.(jpg|png|jpeg)
 function normalizeImgurToDirectCandidates(url) {
   if (!url || typeof url !== "string") return [url];
   const u = url.trim();
@@ -574,7 +575,7 @@ async function getFreshMemberCount(guild) {
   return count;
 }
 
-// ✅ SOLO welcome card (titolo in italiano)
+// SOLO welcome card
 async function renderWelcomeCard(member) {
   if (!Canvas) return null;
 
@@ -604,12 +605,6 @@ async function renderWelcomeCard(member) {
     ctx.restore();
 
     ctx.fillStyle = "rgba(0,0,0,0.14)";
-    ctx.fillRect(0, 0, CARD_W, CARD_H);
-  } else {
-    const g = ctx.createLinearGradient(0, 0, CARD_W, CARD_H);
-    g.addColorStop(0, "#2a0a0a");
-    g.addColorStop(1, "#12061f");
-    ctx.fillStyle = g;
     ctx.fillRect(0, 0, CARD_W, CARD_H);
   }
 
@@ -651,47 +646,19 @@ async function renderWelcomeCard(member) {
 
   const family = WELCOME_FONT_FAMILY || "sans-serif";
 
-  drawCenteredText(
-    ctx,
-    title,
-    cx,
-    395,
-    `900 92px "${family}"`,
-    "#ffffff",
-    "rgba(0,0,0,0.45)",
-    8,
-    true
-  );
+  // posizione “base” (non troppo bassa)
+  drawCenteredText(ctx, title, cx, 395, `900 92px "${family}"`, "#ffffff", "rgba(0,0,0,0.45)", 8, true);
 
   const nameSize = fitFont(ctx, name, 1080, 72, 28, 900, family);
-  drawCenteredText(
-    ctx,
-    name,
-    cx,
-    475,
-    `900 ${nameSize}px "${family}"`,
-    "#ff2b2b",
-    "rgba(0,0,0,0.50)",
-    7,
-    true
-  );
+  drawCenteredText(ctx, name, cx, 475, `900 ${nameSize}px "${family}"`, "#ff2b2b", "rgba(0,0,0,0.50)", 7, true);
 
-  drawCenteredText(
-    ctx,
-    countLine,
-    cx,
-    545,
-    `700 34px "${family}"`,
-    "rgba(255,255,255,0.88)",
-    "rgba(0,0,0,0.35)",
-    5,
-    false
-  );
+  drawCenteredText(ctx, countLine, cx, 545, `700 34px "${family}"`, "rgba(255,255,255,0.88)", "rgba(0,0,0,0.35)", 5, false);
 
   return canvas.toBuffer("image/png");
 }
 
 // ================== WELCOME MESSAGE (Components V2) ==================
+// ✅ ripristino divider/linee e footer “base”
 function buildWelcomeContainerV2({ guildName, userId, fileName }) {
   return [
     {
@@ -700,9 +667,9 @@ function buildWelcomeContainerV2({ guildName, userId, fileName }) {
         { type: 10, content: `# Benvenuto • ${guildName}` },
         { type: 14, divider: false, spacing: 1 },
         { type: 10, content: `Ciao <@${userId}>, benvenuto in **${guildName}**!` },
-        { type: 14, divider: true, spacing: 2 },
+        { type: 14, divider: true, spacing: 2 }, // ✅ linea sopra immagine
         { type: 12, items: [{ description: "Welcome card", media: { url: `attachment://${fileName}` } }] },
-        { type: 14, divider: true, spacing: 2 },
+        { type: 14, divider: true, spacing: 2 }, // ✅ linea sotto immagine
         { type: 10, content: `-# Welcome System` },
       ],
     },
@@ -740,7 +707,7 @@ async function sendWelcomeV2(member) {
   }
 }
 
-// ✅ Goodbye semplice (solo testo)
+// Goodbye semplice (solo testo)
 async function sendGoodbyeSimple(member) {
   if (!GOODBYE_CHANNEL_ID) return;
 
