@@ -68,8 +68,7 @@ const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
 
-// Sfondo welcome: tuo link
-// Puoi anche mettere direttamente: https://i.imgur.com/0F553GO.jpg
+// Sfondo welcome (imgur page ok, il codice lo converte in i.imgur.com)
 const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://imgur.com/0F553GO";
 const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";
 
@@ -255,7 +254,6 @@ function isValidHttpUrl(url) {
   }
 }
 
-// converte imgur.com/ID -> i.imgur.com/ID.(jpg|png|jpeg)
 function normalizeImgurToDirectCandidates(url) {
   if (!url || typeof url !== "string") return [url];
   const u = url.trim();
@@ -576,7 +574,8 @@ async function getFreshMemberCount(guild) {
   return count;
 }
 
-async function renderWelcomeCard(member, mode = "welcome") {
+// ✅ SOLO welcome card (titolo in italiano)
+async function renderWelcomeCard(member) {
   if (!Canvas) return null;
 
   registerWelcomeFontOnce();
@@ -589,7 +588,6 @@ async function renderWelcomeCard(member, mode = "welcome") {
 
   const bg = await loadWelcomeBackground();
   if (bg) {
-    // sotto: cover scurito (riempie tutto)
     ctx.save();
     try { ctx.filter = "blur(18px)"; } catch {}
     ctx.globalAlpha = 0.85;
@@ -599,7 +597,6 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.fillStyle = "rgba(0,0,0,0.28)";
     ctx.fillRect(0, 0, CARD_W, CARD_H);
 
-    // sopra: contain (nessun taglio dell’immagine originale)
     ctx.save();
     try { ctx.filter = "none"; } catch {}
     ctx.globalAlpha = 1;
@@ -646,8 +643,7 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.restore();
   }
 
-  const isGoodbye = mode === "goodbye";
-  const title = isGoodbye ? "ARRIVEDERCI!" : "BENVENUTO!";
+  const title = "BENVENUTO!";
   const name = (member.displayName || member.user.username || "UTENTE").toUpperCase();
 
   const memberCount = await getFreshMemberCount(member.guild);
@@ -696,20 +692,14 @@ async function renderWelcomeCard(member, mode = "welcome") {
 }
 
 // ================== WELCOME MESSAGE (Components V2) ==================
-function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
-  const title = mode === "goodbye" ? `Arrivederci • ${guildName}` : `Benvenuto • ${guildName}`;
-  const line =
-    mode === "goodbye"
-      ? `Ciao <@${userId}>, a presto su **${guildName}**!`
-      : `Ciao <@${userId}>, benvenuto in **${guildName}**!`;
-
+function buildWelcomeContainerV2({ guildName, userId, fileName }) {
   return [
     {
       type: 17,
       components: [
-        { type: 10, content: `# ${title}` },
+        { type: 10, content: `# Benvenuto • ${guildName}` },
         { type: 14, divider: false, spacing: 1 },
-        { type: 10, content: line },
+        { type: 10, content: `Ciao <@${userId}>, benvenuto in **${guildName}**!` },
         { type: 14, divider: true, spacing: 2 },
         { type: 12, items: [{ description: "Welcome card", media: { url: `attachment://${fileName}` } }] },
         { type: 14, divider: true, spacing: 2 },
@@ -719,21 +709,20 @@ function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
   ];
 }
 
-async function sendWelcomeV2(member, mode = "welcome") {
-  const channelId = mode === "goodbye" ? GOODBYE_CHANNEL_ID : WELCOME_CHANNEL_ID;
-  if (!channelId) return;
+async function sendWelcomeV2(member) {
+  if (!WELCOME_CHANNEL_ID) return;
 
-  const ch = await member.guild.channels.fetch(channelId).catch(() => null);
+  const ch = await member.guild.channels.fetch(WELCOME_CHANNEL_ID).catch(() => null);
   if (!ch || !ch.isTextBased?.()) return;
 
-  const lock = await acquireGlobalLock(`welcome:${mode}:${member.guild.id}:${member.id}`, 60_000);
+  const lock = await acquireGlobalLock(`welcome:welcome:${member.guild.id}:${member.id}`, 60_000);
   if (!lock.ok) return;
 
   try {
-    const buf = await renderWelcomeCard(member, mode);
+    const buf = await renderWelcomeCard(member);
     if (!buf) return;
 
-    const fileName = mode === "goodbye" ? "goodbye.png" : "welcome.png";
+    const fileName = "welcome.png";
     const file = new AttachmentBuilder(buf, { name: fileName });
 
     await ch.send({
@@ -741,7 +730,6 @@ async function sendWelcomeV2(member, mode = "welcome") {
       components: buildWelcomeContainerV2({
         guildName: member.guild.name,
         userId: member.id,
-        mode,
         fileName,
       }),
       files: [file],
@@ -750,6 +738,22 @@ async function sendWelcomeV2(member, mode = "welcome") {
   } finally {
     await lock.release();
   }
+}
+
+// ✅ Goodbye semplice (solo testo)
+async function sendGoodbyeSimple(member) {
+  if (!GOODBYE_CHANNEL_ID) return;
+
+  const ch = await member.guild.channels.fetch(GOODBYE_CHANNEL_ID).catch(() => null);
+  if (!ch || !ch.isTextBased?.()) return;
+
+  const userId = member.user?.id || member.id;
+  const guildName = member.guild?.name || "questo server";
+
+  await ch.send({
+    content: `Addio, <@${userId}> ha **Abbandonato la ${guildName}.**`,
+    allowedMentions: { users: [userId], roles: [], repliedUser: false },
+  }).catch(() => {});
 }
 
 // ================== TICKET PANEL UI ==================
@@ -1089,11 +1093,11 @@ function bindEventsOnce() {
   global.__FG_BOUND = true;
 
   client.on("guildMemberAdd", async (member) => {
-    try { await sendWelcomeV2(member, "welcome"); } catch (e) { console.error(e); }
+    try { await sendWelcomeV2(member); } catch (e) { console.error(e); }
   });
 
   client.on("guildMemberRemove", async (member) => {
-    try { await sendWelcomeV2(member, "goodbye"); } catch (e) { console.error(e); }
+    try { await sendGoodbyeSimple(member); } catch (e) { console.error(e); }
   });
 
   client.on("messageCreate", async (msg) => {
