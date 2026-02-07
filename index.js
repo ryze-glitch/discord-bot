@@ -57,6 +57,9 @@ const BANNER_URL = process.env.BANNER_URL || process.env.IMAGE_URL || "";
 const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID || "1467257072243703828";
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID || null;
 
+// ✅ Pannello ticket consentito SOLO in questo canale
+const TICKET_PANEL_CHANNEL_ID = process.env.TICKET_PANEL_CHANNEL_ID || "";
+
 const ALWAYS_OPEN_ROLE_ID = process.env.ALWAYS_OPEN_ROLE_ID || "1463112389296918599";
 const TICKET_CLOSE_ROLE_ID = process.env.TICKET_CLOSE_ROLE_ID || "1461816600733815090";
 const LOG_FOOTER_USER_ID = process.env.LOG_FOOTER_USER_ID || "1387684968536477756";
@@ -68,7 +71,10 @@ const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
 
-// ✅ Base banner (1200x450) + override da env
+// ✅ Ruolo auto-assegnato all’ingresso
+const AUTO_JOIN_ROLE_ID = process.env.AUTO_JOIN_ROLE_ID || "1466504639682973940";
+
+// ✅ Base banner (1200x450)
 const WELCOME_BANNER_URL = process.env.WELCOME_BANNER_URL || "https://imgur.com/h1xLKDZ";
 const WELCOME_BANNER_PATH = process.env.WELCOME_BANNER_PATH || "";
 
@@ -306,6 +312,21 @@ function hasRole(memberOrInteraction, roleId) {
   return member?.roles?.cache?.has(roleId);
 }
 
+function isAdmin(memberOrInteraction) {
+  const member = memberOrInteraction?.member ?? memberOrInteraction;
+  return !!member?.permissions?.has?.(PermissionFlagsBits.Administrator);
+}
+
+async function notifyUserPrivate(msg, text) {
+  // Provo a mantenere "solo per chi lancia il comando"
+  await msg.delete().catch(() => {});
+  const dmOk = await msg.author.send(text).then(() => true).catch(() => false);
+  if (!dmOk) {
+    const r = await msg.channel.send({ content: `<@${msg.author.id}> ${text}` }).catch(() => null);
+    if (r) setTimeout(() => r.delete().catch(() => {}), 5000).unref?.();
+  }
+}
+
 function canCloseTicketFromMember(member) {
   if (!member) return false;
   if (member.permissions?.has?.(PermissionFlagsBits.Administrator)) return true;
@@ -424,7 +445,6 @@ function registerWelcomeFontOnce() {
   __FONT_DONE = true;
 
   if (!Canvas?.GlobalFonts) return;
-
   if (Canvas.GlobalFonts.has?.(WELCOME_FONT_FAMILY)) return;
 
   const candidates = [
@@ -458,7 +478,6 @@ async function fetchToBuffer(url, timeoutMs = 12_000) {
 }
 
 async function loadImageSmart(source) {
-  // source può essere path, url o buffer
   try {
     return await Canvas.loadImage(source);
   } catch {
@@ -475,7 +494,6 @@ async function loadBaseBannerImage() {
   if (!Canvas) return null;
   if (cachedBaseBanner) return cachedBaseBanner;
 
-  // 1) path locale se fornito
   const local = (WELCOME_BANNER_PATH || "").trim();
   if (local) {
     try {
@@ -484,7 +502,6 @@ async function loadBaseBannerImage() {
     } catch {}
   }
 
-  // 2) url (imgur -> i.imgur.com candidates)
   const candidates = normalizeImgurToDirectCandidates((WELCOME_BANNER_URL || "").trim());
   for (const u of candidates) {
     try {
@@ -570,19 +587,16 @@ async function renderWelcomeBanner(member) {
   const canvas = Canvas.createCanvas(BANNER_W, BANNER_H);
   const ctx = canvas.getContext("2d");
 
-  // base background
   ctx.fillStyle = "#0b0710";
   ctx.fillRect(0, 0, BANNER_W, BANNER_H);
 
   const base = await loadBaseBannerImage();
   if (base) {
-    // mantieni la forma: contain (non taglia)
     drawContain(ctx, base, 0, 0, BANNER_W, BANNER_H);
 
-    // leggera vignetta/overlay per leggibilità testo (senza stravolgere il banner)
     const g = ctx.createLinearGradient(0, 0, 0, BANNER_H);
-    g.addColorStop(0, "rgba(0,0,0,0.15)");
-    g.addColorStop(0.55, "rgba(0,0,0,0.18)");
+    g.addColorStop(0, "rgba(0,0,0,0.12)");
+    g.addColorStop(0.55, "rgba(0,0,0,0.16)");
     g.addColorStop(1, "rgba(0,0,0,0.42)");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, BANNER_W, BANNER_H);
@@ -590,14 +604,13 @@ async function renderWelcomeBanner(member) {
 
   const cx = BANNER_W / 2;
 
-  // avatar
   const avatarUrl = member.user.displayAvatarURL({ extension: "png", size: 256 });
   let avatar = null;
   try {
     avatar = await loadImageSmart(avatarUrl);
   } catch {}
 
-  const avatarY = 120;
+  const avatarY = 104;
   const r = 62;
 
   ctx.beginPath();
@@ -622,67 +635,35 @@ async function renderWelcomeBanner(member) {
     ctx.restore();
   }
 
-  // testi (info come prima)
   const family = WELCOME_FONT_FAMILY || "sans-serif";
   const title = "BENVENUTO!";
   const name = (member.displayName || member.user.username || "UTENTE").toUpperCase();
-  const memberCount = await getFreshMemberCount(member.guild);
-  const countLine = `Membri totali: ${memberCount}`;
 
-  // posizioni tarate per 450px altezza
-  drawCenteredText(
-    ctx,
-    title,
-    cx,
-    265,
-    `900 86px "${family}"`,
-    "#ffffff",
-    "rgba(0,0,0,0.45)",
-    8,
-    true
-  );
+  const memberNumber = await getFreshMemberCount(member.guild);
+  const countLine = `Sei il membro numero ${memberNumber}`;
+
+  drawCenteredText(ctx, title, cx, 265, `900 86px "${family}"`, "#ffffff", "rgba(0,0,0,0.45)", 8, true);
 
   const nameSize = fitFont(ctx, name, 1080, 68, 26, 900, family);
-  drawCenteredText(
-    ctx,
-    name,
-    cx,
-    330,
-    `900 ${nameSize}px "${family}"`,
-    "#ff2b2b",
-    "rgba(0,0,0,0.50)",
-    7,
-    true
-  );
+  drawCenteredText(ctx, name, cx, 330, `900 ${nameSize}px "${family}"`, "#ff2b2b", "rgba(0,0,0,0.50)", 7, true);
 
-  drawCenteredText(
-    ctx,
-    countLine,
-    cx,
-    395,
-    `700 30px "${family}"`,
-    "rgba(255,255,255,0.90)",
-    "rgba(0,0,0,0.35)",
-    5,
-    false
-  );
+  drawCenteredText(ctx, countLine, cx, 395, `700 30px "${family}"`, "rgba(255,255,255,0.90)", "rgba(0,0,0,0.35)", 5, false);
 
   return canvas.toBuffer("image/png");
 }
 
 // ================== WELCOME MESSAGE (Components V2) ==================
-function buildWelcomeContainerV2({ guildName, userId, fileName, hhmm }) {
+function buildWelcomeContainerV2({ userId, fileName, hhmm }) {
   return [
     {
       type: 17,
       components: [
-        { type: 10, content: `# Benvenuto • ${guildName}` },
+        { type: 10, content: `# **Fam. Gotti - Sez. Benvenuto**` },
         { type: 14, divider: false, spacing: 1 },
-        { type: 10, content: `Ciao <@${userId}>, benvenuto in **${guildName}**!` },
+        { type: 10, content: `Ciao <@${userId}>, benvenuto!` },
         { type: 14, divider: true, spacing: 2 },
         { type: 12, items: [{ description: "Welcome banner", media: { url: `attachment://${fileName}` } }] },
         { type: 14, divider: true, spacing: 2 },
-        // ✅ by Ryze in grassetto
         { type: 10, content: `-# 👋・**Sistema di Benvenuto by Ryze** - Oggi alle ${hhmm}` },
       ],
     },
@@ -706,25 +687,19 @@ async function sendWelcomeV2(member) {
     const file = new AttachmentBuilder(buf, { name: fileName });
     const hhmm = formatRomeHHMM(new Date());
 
-    await ch
-      .send({
-        flags: MessageFlags.IsComponentsV2,
-        components: buildWelcomeContainerV2({
-          guildName: member.guild.name,
-          userId: member.id,
-          fileName,
-          hhmm,
-        }),
-        files: [file],
-        allowedMentions: { users: [member.id], roles: [], repliedUser: false },
-      })
-      .catch(() => {});
+    await ch.send({
+      flags: MessageFlags.IsComponentsV2,
+      components: buildWelcomeContainerV2({ userId: member.id, fileName, hhmm }),
+      files: [file],
+      allowedMentions: { users: [member.id], roles: [], repliedUser: false },
+    });
+  } catch {
+    // ignore
   } finally {
     await lock.release();
   }
 }
 
-// ✅ Goodbye semplice (solo testo)
 async function sendGoodbyeSimple(member) {
   if (!GOODBYE_CHANNEL_ID) return;
 
@@ -734,16 +709,16 @@ async function sendGoodbyeSimple(member) {
   const userId = member.user?.id || member.id;
   const guildName = member.guild?.name || "questo server";
 
-  await ch
-    .send({
-      content: `Addio, <@${userId}> ha **Abbandonato la ${guildName}.**`,
-      allowedMentions: { users: [userId], roles: [], repliedUser: false },
-    })
-    .catch(() => {});
+  await ch.send({
+    content: `Addio, <@${userId}> ha **Abbandonato la ${guildName}.**`,
+    allowedMentions: { users: [userId], roles: [], repliedUser: false },
+  }).catch(() => {});
 }
 
 // ================== TICKET PANEL UI ==================
 function buildTicketPanelComponents() {
+  const hhmm = formatRomeHHMM(new Date());
+
   const inner = [
     { type: 10, content: `# <:icona_ticket:1467182266554908953> Famiglia Gotti – Ticket Fazione` },
     { type: 14, divider: false, spacing: 1 },
@@ -764,7 +739,10 @@ function buildTicketPanelComponents() {
         { type: 2, style: 4, custom_id: "ticket_btn_info", label: "📄・Ticket Informativa" },
         { type: 2, style: 3, custom_id: "ticket_btn_wl", label: "🛠️・Ticket Fazionati", disabled: true },
       ],
-    }
+    },
+    // ✅ divider + footer sotto pulsanti
+    { type: 14, divider: true, spacing: 2 },
+    { type: 10, content: `-# 📦・**Sistema di Ticket by Ryze - Oggi alle ${hhmm}**` }
   );
 
   return [{ type: 17, components: inner }];
@@ -1084,6 +1062,9 @@ function bindEventsOnce() {
 
   client.on("guildMemberAdd", async (member) => {
     try {
+      if (AUTO_JOIN_ROLE_ID) {
+        await member.roles.add(AUTO_JOIN_ROLE_ID, "Auto-ruolo ingresso").catch(() => {});
+      }
       await sendWelcomeV2(member);
     } catch (e) {
       console.error(e);
@@ -1108,9 +1089,19 @@ function bindEventsOnce() {
       const cmd = (cmdRaw || "").toLowerCase();
       const reason = rest.join(" ").trim();
 
+      // ✅ tutti i comandi testuali: SOLO Amministratori
+      const member = await msg.guild.members.fetch(msg.author.id).catch(() => null);
+      if (!member || !isAdmin(member)) {
+        await notifyUserPrivate(msg, "❌ Solo gli **Amministratori** possono usare i comandi del bot in chat.");
+        return;
+      }
+
       if (cmd === "ticketpanel") {
-        const member = await msg.guild.members.fetch(msg.author.id).catch(() => null);
-        if (!member || !hasRole(member, STAFF_ROLE_ID)) return;
+        // ✅ solo nel canale specifico
+        if (TICKET_PANEL_CHANNEL_ID && msg.channel.id !== TICKET_PANEL_CHANNEL_ID) {
+          await notifyUserPrivate(msg, "❌ Non è possibile inviare/aggiornare il pannello ticket in questo canale.");
+          return;
+        }
         await upsertTicketPanel(msg.channel);
         return;
       }
@@ -1118,9 +1109,7 @@ function bindEventsOnce() {
       if (cmd === "chiudi") {
         if (!isTicketChannel(msg.channel)) return;
 
-        const member = await msg.guild.members.fetch(msg.author.id).catch(() => null);
-        if (!canCloseTicketFromMember(member)) return;
-
+        // (sei admin quindi ok)
         await msg.reply("⏳ Chiusura ticket in corso...").catch(() => {});
         await closeTicketCore({
           guild: msg.guild,
@@ -1139,7 +1128,17 @@ function bindEventsOnce() {
       const idem = await acquireGlobalLock(`ix:${interaction.id}`, 20_000);
       if (!idem.ok) return;
 
+      // ✅ /ticketpanel: SOLO admin + SOLO canale specifico
       if (interaction.isChatInputCommand() && interaction.commandName === "ticketpanel") {
+        if (!interaction.memberPermissions?.has?.(PermissionFlagsBits.Administrator)) {
+          await interaction.reply({ content: "❌ Solo gli **Amministratori** possono usare questo comando.", flags: MessageFlags.Ephemeral }).catch(() => {});
+          return;
+        }
+        if (TICKET_PANEL_CHANNEL_ID && interaction.channelId !== TICKET_PANEL_CHANNEL_ID) {
+          await interaction.reply({ content: "❌ Non è possibile farlo in questo canale.", flags: MessageFlags.Ephemeral }).catch(() => {});
+          return;
+        }
+
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         await upsertTicketPanel(interaction.channel);
         await interaction.deleteReply().catch(() => {});
@@ -1147,6 +1146,7 @@ function bindEventsOnce() {
       }
 
       if (interaction.isButton() && String(interaction.customId).startsWith("dl_tr:")) {
+        // (lascio libero, se vuoi lo limitiamo agli admin dimmelo)
         const token = interaction.customId.split(":")[1] || "";
         const meta = transcriptIndex.get(token);
 
