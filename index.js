@@ -7,7 +7,6 @@ const fsp = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
-const https = require("https");
 
 const {
   Client,
@@ -65,19 +64,16 @@ const LOG_FOOTER_USER_ID = process.env.LOG_FOOTER_USER_ID || "138768496853647775
 const TICKET_TITLE_EMOJI = process.env.TICKET_TITLE_EMOJI || "🎫";
 const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/wUuHZUk.png";
 
-// Welcome
+// Welcome channels
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
 
-// 🔥 tuo banner (puoi mettere anche https://imgur.com/0F553GO)
+// Sfondo welcome (puoi lasciare imgur.com/0F553GO)
 const WELCOME_BG_URL = process.env.WELCOME_BG_URL || "https://imgur.com/0F553GO";
 const WELCOME_BG_PATH = process.env.WELCOME_BG_PATH || "";
 
-// Font (auto-download)
-const WELCOME_FONT_URL =
-  process.env.WELCOME_FONT_URL ||
-  "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf"; // open font repo
-const WELCOME_FONT_FAMILY = process.env.WELCOME_FONT_FAMILY || "WelcomeFont";
+// Font: user-provided ttf dentro la repo
+const WELCOME_FONT_FAMILY = process.env.WELCOME_FONT_FAMILY || "Lexend";
 
 // Redis (opzionale)
 const REDIS_URL = process.env.REDIS_URL || "";
@@ -109,9 +105,6 @@ const PANEL_STATE_FILE = path.join(BASE_DATA_DIR, "panel_state.json");
 const TRANSCRIPTS_DIR = path.join(BASE_DATA_DIR, "transcripts");
 const TRANSCRIPTS_INDEX_FILE = path.join(BASE_DATA_DIR, "transcripts_index.json");
 
-const FONTS_DIR = path.join(BASE_DATA_DIR, "fonts");
-const WELCOME_FONT_PATH = path.join(FONTS_DIR, "welcome-font.ttf");
-
 const LOCK_TTL_MS = 20_000;
 const TRANSCRIPT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -120,43 +113,8 @@ function ensureDirsSync() {
   fs.mkdirSync(LOCKS_DIR, { recursive: true });
   fs.mkdirSync(IDEM_DIR, { recursive: true });
   fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
-  fs.mkdirSync(FONTS_DIR, { recursive: true });
 }
 ensureDirsSync();
-
-// ================== SMALL NET HELPERS ==================
-function downloadToFile(url, destPath) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destPath);
-    const req = https.get(url, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        file.close(() => {
-          fs.unlink(destPath, () => {});
-          downloadToFile(res.headers.location, destPath).then(resolve).catch(reject);
-        });
-        return;
-      }
-
-      if (res.statusCode !== 200) {
-        file.close(() => {
-          fs.unlink(destPath, () => {});
-          reject(new Error(`HTTP ${res.statusCode} downloading ${url}`));
-        });
-        return;
-      }
-
-      res.pipe(file);
-      file.on("finish", () => file.close(resolve));
-    });
-
-    req.on("error", (err) => {
-      file.close(() => {
-        fs.unlink(destPath, () => {});
-        reject(err);
-      });
-    });
-  });
-}
 
 // ================== LOCK UTILS ==================
 function isPidAlive(pid) {
@@ -167,7 +125,6 @@ function isPidAlive(pid) {
     return false;
   }
 }
-
 function readPidFromLockDir(lockDir) {
   try {
     const p = fs.readFileSync(path.join(lockDir, "pid.txt"), "utf8").trim();
@@ -177,13 +134,11 @@ function readPidFromLockDir(lockDir) {
     return null;
   }
 }
-
 function removeDirSync(p) {
   try {
     fs.rmSync(p, { recursive: true, force: true });
   } catch {}
 }
-
 async function acquireDirLock(baseDir, key, ttlMs = LOCK_TTL_MS) {
   const safe = String(key).replace(/[^a-zA-Z0-9_-]/g, "_");
   const lockPath = path.join(baseDir, safe);
@@ -202,12 +157,10 @@ async function acquireDirLock(baseDir, key, ttlMs = LOCK_TTL_MS) {
     return { ok: false, path: lockPath };
   }
 }
-
 async function releaseDirLock(lockPath) {
   if (!lockPath) return;
   await fsp.rm(lockPath, { recursive: true, force: true }).catch(() => {});
 }
-
 async function acquireGlobalLock(key, ttlMs = LOCK_TTL_MS) {
   if (redis) {
     try {
@@ -310,7 +263,6 @@ function normalizeImgurToDirectCandidates(url) {
     const host = parsed.hostname.toLowerCase();
     const parts = parsed.pathname.split("/").filter(Boolean);
 
-    // imgur.com/ID -> i.imgur.com/ID.(jpg|jpeg|png)
     if ((host === "imgur.com" || host === "www.imgur.com") && parts.length >= 1) {
       const id = parts[0];
       if (id && !id.includes(".") && id !== "a" && id !== "gallery") {
@@ -322,7 +274,6 @@ function normalizeImgurToDirectCandidates(url) {
       }
     }
 
-    // i.imgur.com/ID (senza estensione)
     if (host === "i.imgur.com" && parts.length >= 1) {
       const last = parts[parts.length - 1];
       if (last && !last.includes(".")) {
@@ -463,30 +414,43 @@ const CLOSED_MESSAGE =
   "- Domenica: 10:30 - 00:00\n\n" +
   `**Per Aprire Ticket anche al di fuori degli Orari di Supporto Acquista ora l'@&${ALWAYS_OPEN_ROLE_ID} a 4,99€ per ottenere assistenza rapida senza tempi di Attesa per qualsiasi tipo di problema o richiesta!**`;
 
-// ================== WELCOME FONT (AUTO) ==================
-let __WELCOME_FONT_READY = false;
+// ================== FONT REGISTER (FIX RAILWAY) ==================
+let __FONT_DONE = false;
 
-async function ensureWelcomeFont() {
-  if (__WELCOME_FONT_READY) return;
-  if (!Canvas || !Canvas.GlobalFonts) {
-    __WELCOME_FONT_READY = true; // non posso fare altro
+function registerWelcomeFontOnce() {
+  if (__FONT_DONE) return;
+  __FONT_DONE = true;
+
+  if (!Canvas?.GlobalFonts) {
+    console.log("⚠️ Canvas.GlobalFonts non disponibile.");
     return;
   }
 
-  try {
-    if (!fs.existsSync(WELCOME_FONT_PATH)) {
-      await downloadToFile(WELCOME_FONT_URL, WELCOME_FONT_PATH);
+  // se già registrato, stop
+  if (Canvas.GlobalFonts.has?.(WELCOME_FONT_FAMILY)) return;
+
+  const candidates = [
+    path.join(__dirname, "static", "Lexend-VariableFont_wght.ttf"),
+    path.join(__dirname, "Lexend-VariableFont_wght.ttf"),
+    path.join(__dirname, "static", "fonts", "Lexend-VariableFont_wght.ttf"),
+  ];
+
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        const ok = Canvas.GlobalFonts.registerFromPath(p, WELCOME_FONT_FAMILY);
+        console.log(`✅ Font register: ${ok ? "OK" : "FAIL"} -> ${p} as "${WELCOME_FONT_FAMILY}"`);
+        return;
+      }
+    } catch (e) {
+      console.log("⚠️ Font register error:", e?.message || e);
     }
-    Canvas.GlobalFonts.registerFromPath(WELCOME_FONT_PATH, WELCOME_FONT_FAMILY);
-  } catch (e) {
-    console.error("⚠️ Font download/register fallito:", e?.message || e);
-  } finally {
-    __WELCOME_FONT_READY = true;
   }
+
+  console.log("❌ Font non trovato. Metti Lexend-VariableFont_wght.ttf in /static oppure in root.");
 }
 
 // ================== WELCOME CARD (Canvas) ==================
-// come la tua immagine: 1200x450, avatar + WELCOME + nome rosso + member #
 const CARD_W = 1200;
 const CARD_H = 450;
 
@@ -567,7 +531,8 @@ function drawCenteredText(ctx, text, x, y, font, fill, stroke, strokeW, shadow =
 async function renderWelcomeCard(member, mode = "welcome") {
   if (!Canvas) return null;
 
-  await ensureWelcomeFont();
+  // ✅ importantissimo: registra font prima di fillText()
+  registerWelcomeFontOnce();
 
   const canvas = Canvas.createCanvas(CARD_W, CARD_H);
   const ctx = canvas.getContext("2d");
@@ -583,11 +548,9 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.fillRect(0, 0, CARD_W, CARD_H);
   }
 
-  // overlay leggero
   ctx.fillStyle = "rgba(0,0,0,0.18)";
   ctx.fillRect(0, 0, CARD_W, CARD_H);
 
-  // avatar
   const avatarUrl = member.user.displayAvatarURL({ extension: "png", size: 256 });
   let avatar = null;
   try { avatar = await Canvas.loadImage(avatarUrl); } catch {}
@@ -618,14 +581,12 @@ async function renderWelcomeCard(member, mode = "welcome") {
     ctx.restore();
   }
 
-  // testi (uguali alla tua reference)
   const title = mode === "goodbye" ? "GOODBYE!" : "WELCOME!";
   const name = (member.displayName || member.user.username || "USER").toUpperCase();
   const memberCount = member.guild?.memberCount ?? 0;
 
   const family = WELCOME_FONT_FAMILY || "sans-serif";
 
-  // WELCOME
   drawCenteredText(
     ctx,
     title,
@@ -638,7 +599,6 @@ async function renderWelcomeCard(member, mode = "welcome") {
     true
   );
 
-  // NAME (rosso)
   const nameSize = fitFont(ctx, name, 1050, 64, 28, 900, family);
   drawCenteredText(
     ctx,
@@ -652,7 +612,6 @@ async function renderWelcomeCard(member, mode = "welcome") {
     true
   );
 
-  // member #
   drawCenteredText(
     ctx,
     `You are the member #${memberCount}`,
@@ -683,8 +642,6 @@ function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
         { type: 14, divider: false, spacing: 1 },
         { type: 10, content: line },
         { type: 14, divider: true, spacing: 2 },
-
-        // ✅ media gallery: attachment://... [page:0][page:1]
         {
           type: 12,
           items: [
@@ -694,7 +651,6 @@ function buildWelcomeContainerV2({ guildName, userId, mode, fileName }) {
             },
           ],
         },
-
         { type: 14, divider: true, spacing: 2 },
         { type: 10, content: `-# Welcome System` },
       ],
