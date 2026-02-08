@@ -445,7 +445,7 @@ async function tryAssignAutoJoinRole(member, origin = "unknown") {
 
   for (let i = 1; i <= 4; i++) {
     try {
-      await m.roles.add(role, `Auto-ruolo ingresso (${origin})`);
+      await m.roles.add(role, `Auto-Role - Fam. Gotti`);
       const t = `✅ [AUTO-ROLE] Assegnato "${role.name}" a ${userTag} (try ${i}/4)`;
       console.log(t);
       await debugSend(guild, t);
@@ -1235,4 +1235,5 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
+
 
