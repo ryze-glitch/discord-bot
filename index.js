@@ -1146,7 +1146,7 @@ async function createTicketChannel(interaction, ticketType) {
 
 // ================== SLASH COMMANDS ==================
 const commands = [
-  new SlashCommandBuilder().setName("ticketpanel").setDescription("Invia/aggiorna il pannello ticket (senza duplicati)"),
+  new SlashCommandBuilder().setName("ticketpanel").setDescription("Pannello Ticket - Fam. Gotti"),
 ].map((c) => c.toJSON());
 
 async function registerCommandsSafe() {
@@ -1362,4 +1362,5 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
+
 
