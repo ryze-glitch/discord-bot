@@ -17,7 +17,6 @@ const {
   Routes,
   SlashCommandBuilder,
   MessageFlags,
-  MessageType,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
@@ -54,35 +53,34 @@ const GUILD_ID = process.env.GUILD_ID;
 const PREFIX = process.env.PREFIX || "!";
 const BANNER_URL = process.env.BANNER_URL || process.env.IMAGE_URL || "";
 
-// ✅ LOG TICKET (default aggiornato)
+// ✅ LOG TICKET
 const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID || "1469797954381418659";
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID || null;
 
 // ✅ Pannello ticket consentito SOLO in questo canale
 const TICKET_PANEL_CHANNEL_ID = process.env.TICKET_PANEL_CHANNEL_ID || "";
 
-// ✅ DEBUG (opzionale) per capire perché non mette il ruolo
+// ✅ DEBUG (opzionale)
 const AUTO_ROLE_DEBUG_CHANNEL_ID = process.env.AUTO_ROLE_DEBUG_CHANNEL_ID || "";
 
-const ALWAYS_OPEN_ROLE_ID = process.env.ALWAYS_OPEN_ROLE_ID || "1463112389296918599";
+const ALWAYS_OPEN_ROLE_ID = process.env.ALWAYS_OPEN_ROLE_ID || "1463112389296918599"; // non più usato per blocchi orari
 const TICKET_CLOSE_ROLE_ID = process.env.TICKET_CLOSE_ROLE_ID || "1461816600733815090";
 const LOG_FOOTER_USER_ID = process.env.LOG_FOOTER_USER_ID || "1387684968536477756";
 
 const TICKET_TITLE_EMOJI = process.env.TICKET_TITLE_EMOJI || "🎫";
 const WELCOME_THUMB_URL = process.env.WELCOME_THUMB_URL || "https://i.imgur.com/wUuHZUk.png";
 
-// Canali
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || "";
 const GOODBYE_CHANNEL_ID = process.env.GOODBYE_CHANNEL_ID || "";
 
-// ✅ Ruolo auto-assegnato all’ingresso (quello richiesto)
+// ✅ Ruolo auto-assegnato all’ingresso
 const AUTO_JOIN_ROLE_ID = process.env.AUTO_JOIN_ROLE_ID || "1466504639682973940";
 
 // ✅ Base banner (1200x450)
 const WELCOME_BANNER_URL = process.env.WELCOME_BANNER_URL || "https://imgur.com/h1xLKDZ";
 const WELCOME_BANNER_PATH = process.env.WELCOME_BANNER_PATH || "";
 
-// Font (file ttf in repo)
+// Font
 const WELCOME_FONT_FAMILY = process.env.WELCOME_FONT_FAMILY || "Lexend";
 
 // Redis (opzionale)
@@ -245,7 +243,7 @@ async function acquireInstanceLockOrExit() {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers, // necessario per guildMemberAdd
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -254,7 +252,6 @@ const client = new Client({
 // ================== STATE ==================
 let transcriptIndex = new Map();
 const closingInProcess = new Set();
-const openingInProcess = new Map();
 
 // ================== HELPERS ==================
 function sleep(ms) {
@@ -290,22 +287,14 @@ function normalizeImgurToDirectCandidates(url) {
     if ((host === "imgur.com" || host === "www.imgur.com") && parts.length >= 1) {
       const id = parts[0];
       if (id && !id.includes(".") && id !== "a" && id !== "gallery") {
-        return [
-          `https://i.imgur.com/${id}.jpg`,
-          `https://i.imgur.com/${id}.jpeg`,
-          `https://i.imgur.com/${id}.png`,
-        ];
+        return [`https://i.imgur.com/${id}.jpg`, `https://i.imgur.com/${id}.jpeg`, `https://i.imgur.com/${id}.png`];
       }
     }
 
     if (host === "i.imgur.com" && parts.length >= 1) {
       const last = parts[parts.length - 1];
       if (last && !last.includes(".")) {
-        return [
-          `https://i.imgur.com/${last}.jpg`,
-          `https://i.imgur.com/${last}.jpeg`,
-          `https://i.imgur.com/${last}.png`,
-        ];
+        return [`https://i.imgur.com/${last}.jpg`, `https://i.imgur.com/${last}.jpeg`, `https://i.imgur.com/${last}.png`];
       }
     }
 
@@ -368,20 +357,14 @@ function resolveTicketParentId(guild) {
 
 function channelNameForTicket(ticketType, username) {
   const u = sanitizeForChannelUsername(username);
-  if (ticketType === "Braccio Armato") return `🔫・ticket-${u}`;
-  if (ticketType === "Informativa") return `📄・ticket-${u}`;
-  return `ticket-${u}`;
+  const suf = crypto.randomBytes(2).toString("hex");
+  if (ticketType === "Braccio Armato") return `🔫・ticket-${u}-${suf}`;
+  if (ticketType === "Informativa") return `📄・ticket-${u}-${suf}`;
+  return `ticket-${u}-${suf}`;
 }
 
 function topicForTicket(ticketType, userId) {
-  return `**Categoria:** ${ticketType} | **Utente:** <@${userId}>`;
-}
-
-async function findExistingTicketFresh(guild, userId) {
-  await guild.channels.fetch().catch(() => null);
-  return guild.channels.cache.find(
-    (c) => c?.type === ChannelType.GuildText && typeof c.topic === "string" && c.topic.includes(`<@${userId}>`)
-  );
+  return `**Categoria:** ${ticketType} | **Utente:** <@${userId}> | **Aperto:** ${new Date().toISOString()}`;
 }
 
 function extractUserIdFromTopic(topic) {
@@ -405,34 +388,19 @@ function formatRomeHHMM(date = new Date()) {
   }).format(date);
 }
 
-function lockUserOpen(userId, ttlMs = 15_000) {
-  const now = Date.now();
-  const last = openingInProcess.get(userId);
-  if (last && now - last < ttlMs) return false;
-  openingInProcess.set(userId, now);
-  setTimeout(() => {
-    const v = openingInProcess.get(userId);
-    if (v === now) openingInProcess.delete(userId);
-  }, ttlMs).unref?.();
-  return true;
-}
-
 // ================== AUTO ROLE (robusto + debug) ==================
-async function tryAssignAutoJoinRole(member) {
+async function tryAssignAutoJoinRole(member, origin = "unknown") {
   if (!AUTO_JOIN_ROLE_ID) return;
 
   const guild = member.guild;
   const userTag = `${member.user?.tag ?? member.id}`;
 
-  // Piccola attesa: a volte il join arriva “presto” e la cache/permessi non sono ancora pronti
   await sleep(1200);
-
-  // Forza fetch del member (stato fresco)
-  const freshMember = await guild.members.fetch(member.id).catch(() => member);
+  let m = await guild.members.fetch(member.id).catch(() => member);
 
   const role = await guild.roles.fetch(AUTO_JOIN_ROLE_ID).catch(() => null);
   if (!role) {
-    const t = `❌ [AUTO-ROLE] Ruolo non trovato: ${AUTO_JOIN_ROLE_ID}`;
+    const t = `❌ [AUTO-ROLE] Ruolo non trovato: ${AUTO_JOIN_ROLE_ID} (${origin})`;
     console.log(t);
     await debugSend(guild, t);
     return;
@@ -440,95 +408,59 @@ async function tryAssignAutoJoinRole(member) {
 
   const me = guild.members.me || (await guild.members.fetchMe().catch(() => null));
   if (!me) {
-    const t = `❌ [AUTO-ROLE] Non riesco a fetchare il bot member in guild.`;
+    const t = `❌ [AUTO-ROLE] Impossibile fetchare il bot member (${origin})`;
     console.log(t);
     await debugSend(guild, t);
     return;
   }
 
-  // Check permessi base
+  if (role.managed) {
+    const t = `❌ [AUTO-ROLE] Ruolo "${role.name}" managed=true (integrazione) => non assegnabile. (${origin})`;
+    console.log(t);
+    await debugSend(guild, t);
+    return;
+  }
+
+  if (!role.editable) {
+    const t =
+      `❌ [AUTO-ROLE] Ruolo NON editable: "${role.name}" (${role.id}). (${origin})\n` +
+      `Bot highest="${me.roles.highest?.name}" pos=${me.roles.highest?.position}\n` +
+      `Target pos=${role.position}\n` +
+      `Soluzione: sposta il ruolo del bot sopra "${role.name}" nei Ruoli.`;
+    console.log(t);
+    await debugSend(guild, t);
+    return;
+  }
+
   const hasAdmin = me.permissions.has(PermissionFlagsBits.Administrator);
   const hasManageRoles = me.permissions.has(PermissionFlagsBits.ManageRoles);
   if (!hasAdmin && !hasManageRoles) {
-    const t = `❌ [AUTO-ROLE] Il bot non ha Administrator/ManageRoles. user=${userTag}`;
+    const t = `❌ [AUTO-ROLE] Il bot non ha Administrator/ManageRoles. (${origin})`;
     console.log(t);
     await debugSend(guild, t);
     return;
   }
 
-  // Check gerarchia/role.editable (se false, è quasi sempre “ruolo sopra al bot” o permessi mancanti)
-  if (!role.editable) {
-    const t =
-      `❌ [AUTO-ROLE] Il ruolo "${role.name}" (${role.id}) NON è editable dal bot.\n` +
-      `Bot highest role: "${me.roles.highest?.name}" pos=${me.roles.highest?.position}\n` +
-      `Target role pos=${role.position}\n` +
-      `Soluzione: sposta il ruolo del bot sopra "${role.name}" nella gerarchia ruoli.`;
-    console.log(t);
-    await debugSend(guild, t);
-    return;
-  }
+  if (m.roles.cache.has(role.id)) return;
 
-  // Già presente?
-  if (freshMember.roles.cache.has(role.id)) return;
-
-  // Retry: 3 tentativi
-  let lastErr = null;
-  for (let i = 1; i <= 3; i++) {
+  for (let i = 1; i <= 4; i++) {
     try {
-      await freshMember.roles.add(role, "Auto-Role - Fam. Gotti");
-      const t = `✅ [AUTO-ROLE] Assegnato "${role.name}" a ${userTag} (try ${i}/3).`;
+      await m.roles.add(role, `Auto-ruolo ingresso (${origin})`);
+      const t = `✅ [AUTO-ROLE] Assegnato "${role.name}" a ${userTag} (try ${i}/4)`;
       console.log(t);
       await debugSend(guild, t);
       return;
     } catch (e) {
-      lastErr = e;
       const code = e?.code ? ` code=${e.code}` : "";
       const msg = e?.message ? ` msg=${e.message}` : "";
-      const t = `❌ [AUTO-ROLE] Fallito roles.add (try ${i}/3) user=${userTag}${code}${msg}`;
+      const t = `❌ [AUTO-ROLE] roles.add fallito (try ${i}/4) user=${userTag}${code}${msg} (${origin})`;
       console.log(t);
       await debugSend(guild, t);
-      await sleep(900);
+      await sleep(1200);
+      m = await guild.members.fetch(member.id).catch(() => m);
     }
   }
-
-  if (lastErr) {
-    const t = `❌ [AUTO-ROLE] Definitivamente fallito per ${userTag}. Controlla gerarchia ruoli e permessi.`;
-    console.log(t);
-    await debugSend(guild, t);
-  }
 }
-
-// ================== SUPPORT HOURS ==================
-function minutesNowRome() {
-  const parts = new Intl.DateTimeFormat("it-IT", {
-    timeZone: "Europe/Rome",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date());
-  const hh = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
-  const mm = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
-  return hh * 60 + mm;
-}
-function weekdayRome() {
-  const wd = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Rome", weekday: "short" })
-    .format(new Date())
-    .toLowerCase();
-  const map = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
-  return map[wd] ?? 0;
-}
-function isWithinSupportHoursRome() {
-  const day = weekdayRome();
-  const now = minutesNowRome();
-  const mins = (h, m) => h * 60 + m;
-  if (day >= 1 && day <= 5) return now >= mins(12, 0);
-  if (day === 6) return now >= mins(10, 30) || now < mins(1, 30);
-  return now >= mins(10, 30);
-}
-
-const CLOSED_MESSAGE =
-  "Al Momento non è possibile Aprire Nuovi Ticket. Ti Invitiamo a riprovare durante i nostri **Orari di Controllo Ticket:**\n" +
-  "- Lunedì - Domenica: 09:00 - 00:00\n" +
 
 // ================== WELCOME BANNER (Canvas) ==================
 const BANNER_W = 1200;
@@ -615,7 +547,6 @@ function drawContain(ctx, img, x, y, w, h) {
   const canvasRatio = w / h;
 
   let dw, dh, dx, dy;
-
   if (imgRatio >= canvasRatio) {
     dw = w;
     dh = dw / imgRatio;
@@ -627,7 +558,6 @@ function drawContain(ctx, img, x, y, w, h) {
     dx = x + (w - dw) / 2;
     dy = y;
   }
-
   ctx.drawImage(img, dx, dy, dw, dh);
 }
 
@@ -912,7 +842,7 @@ async function upsertTicketPanel(channel) {
 function buildTicketWelcomeEmbed() {
   return new EmbedBuilder()
     .setTitle("Benvenuto nel Sistema Ticket della Famiglia Gotti <:icona_ticket:1467182266554908953>")
-    .setDescription("Esponi il Tuo Problema Verrai Assisstito a Breve in Base alla Categoria del Ticket Selezionata.")
+    .setDescription("Esponi il Tuo Problema, verrai assistito a breve in base alla categoria del ticket selezionata.")
     .setThumbnail(WELCOME_THUMB_URL)
     .setColor(0xed4245);
 }
@@ -920,26 +850,14 @@ function buildCloseButtonRow() {
   const btn = new ButtonBuilder().setCustomId("ticket_close_now").setStyle(ButtonStyle.Danger).setLabel("🔐・Chiudi Ticket");
   return new ActionRowBuilder().addComponents(btn);
 }
-async function pinAndCleanupPinSystemMessage(msg) {
-  try {
-    await msg.pin("Ticket header");
-  } catch {
-    return;
-  }
-  try {
-    const recent = await msg.channel.messages.fetch({ limit: 5 });
-    const sysPin = recent.find((m) => m.type === MessageType.ChannelPinnedMessage);
-    if (sysPin) await sysPin.delete().catch(() => {});
-  } catch {}
-}
 async function sendTicketWelcome(channel, guildName, userId) {
-  const m = await channel.send({
+  // ✅ NON viene più pinnato niente
+  await channel.send({
     content: `Benvenuto <@${userId}> nel Sistema Ticket della **${guildName}**`,
     embeds: [buildTicketWelcomeEmbed()],
     components: [buildCloseButtonRow()],
     allowedMentions: { users: [userId], roles: [], repliedUser: false },
   });
-  pinAndCleanupPinSystemMessage(m).catch(() => {});
 }
 
 // ================== TRANSCRIPTS ==================
@@ -1108,43 +1026,30 @@ async function createTicketChannel(interaction, ticketType) {
   const guild = interaction.guild;
   const user = interaction.user;
 
-  const lock = await acquireGlobalLock(`open:${guild.id}:${user.id}`, 20_000);
-  if (!lock.ok) {
-    const existing = await findExistingTicketFresh(guild, user.id);
-    return { already: true, channel: existing };
-  }
+  const parentId = resolveTicketParentId(guild);
+  const desiredName = channelNameForTicket(ticketType, user.username);
+  const topic = topicForTicket(ticketType, user.id);
 
-  try {
-    const existing = await findExistingTicketFresh(guild, user.id);
-    if (existing) return { already: true, channel: existing };
+  const channel = await guild.channels.create({
+    name: desiredName,
+    type: ChannelType.GuildText,
+    parent: parentId ?? undefined,
+    topic,
+    permissionOverwrites: [
+      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      { id: STAFF_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+    ],
+  });
 
-    const parentId = resolveTicketParentId(guild);
-    const desiredName = channelNameForTicket(ticketType, user.username);
-    const topic = topicForTicket(ticketType, user.id);
-
-    const channel = await guild.channels.create({
-      name: desiredName,
-      type: ChannelType.GuildText,
-      parent: parentId ?? undefined,
-      topic,
-      permissionOverwrites: [
-        { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-        { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-        { id: STAFF_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-      ],
-    });
-
-    sendTicketWelcome(channel, guild.name, user.id).catch(() => {});
-    return { already: false, channel };
-  } finally {
-    await lock.release();
-  }
+  sendTicketWelcome(channel, guild.name, user.id).catch(() => {});
+  return { channel };
 }
 
 // ================== SLASH COMMANDS ==================
-const commands = [
-  new SlashCommandBuilder().setName("ticketpanel").setDescription("Pannello Ticket - Fam. Gotti"),
-].map((c) => c.toJSON());
+const commands = [new SlashCommandBuilder().setName("ticketpanel").setDescription("Invia/aggiorna il pannello ticket (senza duplicati)")].map((c) =>
+  c.toJSON()
+);
 
 async function registerCommandsSafe() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -1158,10 +1063,7 @@ function bindEventsOnce() {
 
   client.on("guildMemberAdd", async (member) => {
     try {
-      // ✅ prima prova assegnazione ruolo richiesto
-      await tryAssignAutoJoinRole(member);
-
-      // ✅ poi benvenuto
+      await tryAssignAutoJoinRole(member, "guildMemberAdd");
       await sendWelcomeV2(member);
     } catch (e) {
       console.error("guildMemberAdd error:", e);
@@ -1286,29 +1188,17 @@ function bindEventsOnce() {
         return;
       }
 
+      // ✅ APERTURA TICKET: nessun blocco orario, nessun cooldown, nessun limite
       if (interaction.isButton() && ["ticket_btn_braccio", "ticket_btn_info", "ticket_btn_wl"].includes(interaction.customId)) {
         if (interaction.customId === "ticket_btn_wl") {
           await interaction.reply({ content: "Prossimamente...", flags: MessageFlags.Ephemeral }).catch(() => {});
           return;
         }
 
-        const canBypass = hasRole(interaction, ALWAYS_OPEN_ROLE_ID);
-        if (!canBypass && !isWithinSupportHoursRome()) {
-          await interaction.reply({ content: CLOSED_MESSAGE, flags: MessageFlags.Ephemeral }).catch(() => {});
-          return;
-        }
-
-        if (!lockUserOpen(interaction.user.id)) {
-          await interaction.reply({ content: "⏳ Ticket già in creazione...", flags: MessageFlags.Ephemeral }).catch(() => {});
-          return;
-        }
-
-        await interaction.reply({ content: "⏳ Sto creando il ticket...", flags: MessageFlags.Ephemeral }).catch(() => {});
+        await interaction.reply({ content: "✅ Ticket in creazione...", flags: MessageFlags.Ephemeral }).catch(() => {});
         const ticketType = interaction.customId === "ticket_btn_braccio" ? "Braccio Armato" : "Informativa";
 
         const res = await createTicketChannel(interaction, ticketType);
-        if (res.already && res.channel) return interaction.editReply({ content: `Hai già un ticket aperto: ${res.channel}` }).catch(() => {});
-        if (res.already) return interaction.editReply({ content: "Hai già un ticket aperto." }).catch(() => {});
         return interaction.editReply({ content: `Ticket aperto: ${res.channel}` }).catch(() => {});
       }
 
@@ -1332,20 +1222,6 @@ function bindEventsOnce() {
 // ================== READY ==================
 client.once("ready", async () => {
   console.log(`Online: ${client.user.tag}`);
-
-  // Debug iniziale (una volta): mostra subito se il ruolo è assegnabile
-  const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
-  if (guild && AUTO_JOIN_ROLE_ID) {
-    const me = guild.members.me || (await guild.members.fetchMe().catch(() => null));
-    const role = await guild.roles.fetch(AUTO_JOIN_ROLE_ID).catch(() => null);
-    if (me && role) {
-      const t =
-        `ℹ️ [BOOT] Auto-role target="${role.name}" pos=${role.position} editable=${role.editable}\n` +
-        `ℹ️ [BOOT] Bot highest="${me.roles.highest?.name}" pos=${me.roles.highest?.position}`;
-      console.log(t);
-      await debugSend(guild, t);
-    }
-  }
 });
 
 // ================== START ==================
@@ -1359,7 +1235,3 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
-
-
-
-
