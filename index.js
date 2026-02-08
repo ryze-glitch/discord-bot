@@ -528,7 +528,7 @@ function isWithinSupportHoursRome() {
 
 const CLOSED_MESSAGE =
   "Al Momento non è possibile Aprire Nuovi Ticket. Ti Invitiamo a riprovare durante i nostri **Orari di Controllo Ticket:**\n" +
-  "- Lunedì - Domenica: 09:00 - 00:00\n" +;
+  "- Lunedì - Domenica: 09:00 - 00:00\n" +
 
 // ================== WELCOME BANNER (Canvas) ==================
 const BANNER_W = 1200;
@@ -1359,6 +1359,7 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
+
 
 
 
