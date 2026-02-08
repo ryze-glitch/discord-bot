@@ -729,9 +729,9 @@ function buildTicketPanelComponents() {
     {
       type: 1,
       components: [
+        { type: 2, style: 3, custom_id: "ticket_btn_genfaz", label: "🛠️・Generale / Fazionati" },
         { type: 2, style: 1, custom_id: "ticket_btn_ba", label: "🔫・Braccio Armato / Soldato" },
         { type: 2, style: 4, custom_id: "ticket_btn_info", label: "📄・Informativa" },
-        { type: 2, style: 3, custom_id: "ticket_btn_genfaz", label: "🛠️・Generale / Fazionati" },
       ],
     },
     { type: 14, divider: true, spacing: 2 },
@@ -1260,5 +1260,6 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
+
 
 
