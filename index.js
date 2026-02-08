@@ -68,8 +68,8 @@ const TICKET_PANEL_CHANNEL_ID = process.env.TICKET_PANEL_CHANNEL_ID || "";
 const AUTO_ROLE_DEBUG_CHANNEL_ID = process.env.AUTO_ROLE_DEBUG_CHANNEL_ID || "";
 
 // Ruoli
-const TICKET_CLOSE_ROLE_ID = process.env.TICKET_CLOSE_ROLE_ID || "1461816600733815090"; // già presente
-const EXTRA_TICKET_MANAGER_ROLE_ID = process.env.EXTRA_TICKET_MANAGER_ROLE_ID || "1458217061837705311"; // nuovo gestore
+const TICKET_CLOSE_ROLE_ID = process.env.TICKET_CLOSE_ROLE_ID || "1461816600733815090";
+const EXTRA_TICKET_MANAGER_ROLE_ID = process.env.EXTRA_TICKET_MANAGER_ROLE_ID || "1458217061837705311";
 const LOG_FOOTER_USER_ID = process.env.LOG_FOOTER_USER_ID || "1387684968536477756";
 
 const TICKET_TITLE_EMOJI = process.env.TICKET_TITLE_EMOJI || "🎫";
@@ -316,11 +316,6 @@ function sanitizeForChannelUsername(username) {
   return s || "utente";
 }
 
-function isAdmin(memberOrInteraction) {
-  const member = memberOrInteraction?.member ?? memberOrInteraction;
-  return !!member?.permissions?.has?.(PermissionFlagsBits.Administrator);
-}
-
 function canCloseTicketFromMember(member) {
   if (!member) return false;
   if (member.permissions?.has?.(PermissionFlagsBits.Administrator)) return true;
@@ -344,6 +339,11 @@ function extractCategoryFromTopic(topic) {
   const m = topic.match(/\*\*Categoria:\*\*\s*([^|]+)\s*\|/);
   return m ? m[1].trim() : "Sconosciuta";
 }
+function extractSubCategoryFromTopic(topic) {
+  if (!topic || typeof topic !== "string") return null;
+  const m = topic.match(/\*\*SottoCategoria:\*\*\s*([^|]+)\s*(\||$)/);
+  return m ? m[1].trim() : null;
+}
 
 function formatRomeHHMM(date = new Date()) {
   return new Intl.DateTimeFormat("it-IT", {
@@ -356,19 +356,13 @@ function formatRomeHHMM(date = new Date()) {
 
 function getTicketParentForType(ticketType) {
   if (ticketType === "Informativa") return CATEGORY_INFORMATIVA_ID;
-  if (ticketType === "Generale") return CATEGORY_GENERALE_FAZ_ID;
-  if (ticketType === "Fazionati") return CATEGORY_GENERALE_FAZ_ID;
-  // Braccio Armato / Soldato
-  return CATEGORY_SOLDATO_BA_ID;
+  if (ticketType === "Generale / Fazionati") return CATEGORY_GENERALE_FAZ_ID;
+  return CATEGORY_SOLDATO_BA_ID; // Braccio Armato / Soldato
 }
 
-function channelNameForTicket(ticketType, username) {
+function baseTicketChannelName(username) {
   const u = sanitizeForChannelUsername(username);
-  const suf = crypto.randomBytes(2).toString("hex");
-  if (ticketType === "Informativa") return `📄・ticket-${u}-${suf}`;
-  if (ticketType === "Generale") return `🎖️・ticket-${u}-${suf}`;
-  if (ticketType === "Fazionati") return `🛠️・ticket-${u}-${suf}`;
-  return `🔫・ticket-${u}-${suf}`; // Braccio Armato / Soldato
+  return `🎫・ticket-${u}`;
 }
 
 function topicForTicket(ticketType, userId) {
@@ -380,8 +374,14 @@ function uniqueRoleIds(arr) {
 }
 
 function buildTicketManagerRoleIds() {
-  // chiesto: questi due + lo staff role che già avevi
   return uniqueRoleIds([STAFF_ROLE_ID, TICKET_CLOSE_ROLE_ID, EXTRA_TICKET_MANAGER_ROLE_ID]);
+}
+
+async function safeRenameChannel(channel, newName) {
+  try {
+    // Discord: max 100 chars
+    await channel.setName(String(newName).slice(0, 100));
+  } catch {}
 }
 
 // ================== AUTO ROLE (debug) ==================
@@ -389,39 +389,18 @@ async function tryAssignAutoJoinRole(member, origin = "unknown") {
   if (!AUTO_JOIN_ROLE_ID) return;
 
   const guild = member.guild;
-  const userTag = `${member.user?.tag ?? member.id}`;
 
-  await sleep(1200);
+  await sleep(900);
   let m = await guild.members.fetch(member.id).catch(() => member);
 
   const role = await guild.roles.fetch(AUTO_JOIN_ROLE_ID).catch(() => null);
-  if (!role) {
-    const t = `❌ [AUTO-ROLE] Ruolo non trovato: ${AUTO_JOIN_ROLE_ID} (${origin})`;
-    console.log(t);
-    await debugSend(guild, t);
-    return;
-  }
+  if (!role) return;
 
   const me = guild.members.me || (await guild.members.fetchMe().catch(() => null));
   if (!me) return;
 
-  if (role.managed) {
-    const t = `❌ [AUTO-ROLE] Ruolo "${role.name}" managed=true (integrazione) => non assegnabile.`;
-    console.log(t);
-    await debugSend(guild, t);
-    return;
-  }
-
-  if (!role.editable) {
-    const t =
-      `❌ [AUTO-ROLE] Ruolo NON editable: "${role.name}" (${role.id}).\n` +
-      `Bot highest="${me.roles.highest?.name}" pos=${me.roles.highest?.position}\n` +
-      `Target pos=${role.position}\n` +
-      `Soluzione: sposta il ruolo del bot sopra "${role.name}" nei Ruoli.`;
-    console.log(t);
-    await debugSend(guild, t);
-    return;
-  }
+  if (role.managed) return;
+  if (!role.editable) return;
 
   const hasAdmin = me.permissions.has(PermissionFlagsBits.Administrator);
   const hasManageRoles = me.permissions.has(PermissionFlagsBits.ManageRoles);
@@ -433,15 +412,13 @@ async function tryAssignAutoJoinRole(member, origin = "unknown") {
     try {
       await m.roles.add(role, `Auto-ruolo ingresso (${origin})`);
       return;
-    } catch (e) {
+    } catch {
       await sleep(1200);
       m = await guild.members.fetch(member.id).catch(() => m);
     }
   }
 
-  const t = `❌ [AUTO-ROLE] Fallito assegnare ruolo a ${userTag}. (Vedi gerarchia/permessi)`;
-  console.log(t);
-  await debugSend(guild, t);
+  await debugSend(guild, `❌ [AUTO-ROLE] Fallito assegnare ruolo a ${member.user?.tag ?? member.id}.`);
 }
 
 // ================== WELCOME BANNER (Canvas) ==================
@@ -736,6 +713,7 @@ function buildTicketPanelComponents() {
 
   if (isValidHttpUrl(BANNER_URL)) inner.push({ type: 12, items: [{ media: { url: BANNER_URL } }] });
 
+  // ✅ Tolto Ticket Generale, Fazionati diventa "Generale / Fazionati"
   inner.push(
     { type: 14, divider: true, spacing: 2 },
     {
@@ -743,8 +721,7 @@ function buildTicketPanelComponents() {
       components: [
         { type: 2, style: 1, custom_id: "ticket_btn_ba", label: "🔫・Braccio Armato / Soldato" },
         { type: 2, style: 4, custom_id: "ticket_btn_info", label: "📄・Ticket Informativa" },
-        { type: 2, style: 2, custom_id: "ticket_btn_gen", label: "🎖️・Ticket Generale" },
-        { type: 2, style: 3, custom_id: "ticket_btn_faz", label: "🛠️・Ticket Fazionati" },
+        { type: 2, style: 3, custom_id: "ticket_btn_genfaz", label: "🛠️・Generale / Fazionati" },
       ],
     },
     { type: 14, divider: true, spacing: 2 },
@@ -901,13 +878,14 @@ function makeToken() {
   return crypto.randomBytes(8).toString("hex");
 }
 
-// ================== LOG SEND ==================
+// ================== LOG SEND (UPDATED UI) ==================
 async function getLogChannel(guild) {
   const ch = await guild.channels.fetch(TICKET_LOG_CHANNEL_ID).catch(() => null);
   if (!ch) return null;
   if (!ch.isTextBased?.()) return null;
   return ch;
 }
+
 function buildTicketLogV2Components({ ticketName, openerId, closedById, category, reason, closedAt, transcriptToken }) {
   const safeReason = (String(reason || "").trim() || "Nessuna motivazione fornita.").slice(0, 900);
   const hhmm = formatRomeHHMM(closedAt || new Date());
@@ -920,19 +898,25 @@ function buildTicketLogV2Components({ ticketName, openerId, closedById, category
     { type: 10, content: `**Concluso da:** <@${closedById}>` },
     { type: 10, content: `**Categoria:** ${category || "Sconosciuta"}` },
     { type: 10, content: `**Motivazione:** ${safeReason}` },
-    { type: 14, divider: true, spacing: 2 },
-    { type: 10, content: `-# **LOG Ticket by <@${LOG_FOOTER_USER_ID}> - Oggi alle ${hhmm}**` },
   ];
 
+  // ✅ “Scarica Transcript” in mezzo alle due righe (se disponibili)
   if (transcriptToken) {
     inner.push(
       { type: 14, divider: true, spacing: 2 },
-      { type: 1, components: [{ type: 2, style: 1, custom_id: `dl_tr:${transcriptToken}`, label: "⬇️・Scarica Transcript" }] }
+      { type: 1, components: [{ type: 2, style: 1, custom_id: `dl_tr:${transcriptToken}`, label: "⬇️・Scarica Transcript" }] },
+      { type: 14, divider: true, spacing: 2 }
     );
+  } else {
+    inner.push({ type: 14, divider: true, spacing: 2 });
   }
+
+  // ✅ footer testo richiesto
+  inner.push({ type: 10, content: `-# 📋・Sistema di LOG Ticket by Ryze - Oggi alle ${hhmm}` });
 
   return [{ type: 17, components: inner }];
 }
+
 async function sendTicketLogOnce({ guild, uniqueKey, ...data }) {
   const lock = await acquireGlobalLock(`log:${uniqueKey}`, 30_000);
   if (!lock.ok) return;
@@ -1026,7 +1010,7 @@ async function createTicketChannel(interaction, ticketType) {
   const user = interaction.user;
 
   const parentId = getTicketParentForType(ticketType);
-  const desiredName = channelNameForTicket(ticketType, user.username);
+  const desiredName = baseTicketChannelName(user.username);
   const topic = topicForTicket(ticketType, user.id);
 
   const managerRoleIds = buildTicketManagerRoleIds();
@@ -1171,17 +1155,15 @@ function bindEventsOnce() {
         return;
       }
 
-      // Pulsanti apertura ticket (illimitati)
-      if (interaction.isButton() && ["ticket_btn_ba", "ticket_btn_info", "ticket_btn_gen", "ticket_btn_faz"].includes(interaction.customId)) {
+      // Pulsanti apertura ticket
+      if (interaction.isButton() && ["ticket_btn_ba", "ticket_btn_info", "ticket_btn_genfaz"].includes(interaction.customId)) {
         await interaction.reply({ content: "✅ Ticket in creazione...", flags: MessageFlags.Ephemeral }).catch(() => {});
         const type =
           interaction.customId === "ticket_btn_ba"
             ? "Braccio Armato"
             : interaction.customId === "ticket_btn_info"
               ? "Informativa"
-              : interaction.customId === "ticket_btn_gen"
-                ? "Generale"
-                : "Fazionati";
+              : "Generale / Fazionati";
 
         const res = await createTicketChannel(interaction, type);
         await interaction.editReply({ content: `Ticket aperto: ${res.channel}` }).catch(() => {});
@@ -1197,26 +1179,30 @@ function bindEventsOnce() {
         }
 
         const picked = interaction.customId.split(":")[1] || "Sconosciuto";
+        const openerId = extractUserIdFromTopic(interaction.channel.topic) || interaction.user.id;
 
-        // ACK rapido, poi pulizia
         await interaction.deferUpdate().catch(() => {});
-
-        // elimina il pannello di selezione
         await interaction.message.delete().catch(() => {});
 
-        // salva in topic la scelta (non sposta categoria perché entrambe stanno nella stessa)
+        // aggiorna topic con sottocategoria
         const oldTopic = interaction.channel.topic || "";
         const newTopic = oldTopic.includes("**SottoCategoria:**")
           ? oldTopic.replace(/\*\*SottoCategoria:\*\*.*$/m, `**SottoCategoria:** ${picked}`)
           : `${oldTopic} | **SottoCategoria:** ${picked}`;
-
         await interaction.channel.setTopic(newTopic.slice(0, 1024)).catch(() => {});
+
+        // aggiorna nome canale con emoji richiesta
+        if (picked === "Soldato") {
+          await safeRenameChannel(interaction.channel, `🕵️‍♂️・${baseTicketChannelName(interaction.user.username)}`);
+        } else {
+          await safeRenameChannel(interaction.channel, `🔫・${baseTicketChannelName(interaction.user.username)}`);
+        }
 
         // messaggio conferma richiesto
         await interaction.channel
           .send({
-            content: `<@${interaction.user.id}>: **Hai Selezionato la Categoria:** \`${picked}\``,
-            allowedMentions: { users: [interaction.user.id], roles: [], repliedUser: false },
+            content: `<@${openerId}>: **Hai Selezionato la Categoria:** \`${picked}\``,
+            allowedMentions: { users: [openerId], roles: [], repliedUser: false },
           })
           .catch(() => {});
 
