@@ -55,7 +55,11 @@ const BANNER_URL = process.env.BANNER_URL || process.env.IMAGE_URL || "";
 
 // ✅ LOG TICKET
 const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID || "1469797954381418659";
-const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID || null;
+
+// ✅ CATEGORIE (parent) richieste
+const CATEGORY_SOLDATO_BA_ID = process.env.CATEGORY_SOLDATO_BA_ID || "1463774563128180767";
+const CATEGORY_GENERALE_FAZ_ID = process.env.CATEGORY_GENERALE_FAZ_ID || "1469854311201771661";
+const CATEGORY_INFORMATIVA_ID = process.env.CATEGORY_INFORMATIVA_ID || "1469853371459571743";
 
 // ✅ Pannello ticket consentito SOLO in questo canale
 const TICKET_PANEL_CHANNEL_ID = process.env.TICKET_PANEL_CHANNEL_ID || "";
@@ -63,8 +67,9 @@ const TICKET_PANEL_CHANNEL_ID = process.env.TICKET_PANEL_CHANNEL_ID || "";
 // ✅ DEBUG (opzionale)
 const AUTO_ROLE_DEBUG_CHANNEL_ID = process.env.AUTO_ROLE_DEBUG_CHANNEL_ID || "";
 
-const ALWAYS_OPEN_ROLE_ID = process.env.ALWAYS_OPEN_ROLE_ID || "1463112389296918599"; // non più usato per blocchi orari
-const TICKET_CLOSE_ROLE_ID = process.env.TICKET_CLOSE_ROLE_ID || "1461816600733815090";
+// Ruoli
+const TICKET_CLOSE_ROLE_ID = process.env.TICKET_CLOSE_ROLE_ID || "1461816600733815090"; // già presente
+const EXTRA_TICKET_MANAGER_ROLE_ID = process.env.EXTRA_TICKET_MANAGER_ROLE_ID || "1458217061837705311"; // nuovo gestore
 const LOG_FOOTER_USER_ID = process.env.LOG_FOOTER_USER_ID || "1387684968536477756";
 
 const TICKET_TITLE_EMOJI = process.env.TICKET_TITLE_EMOJI || "🎫";
@@ -79,11 +84,8 @@ const AUTO_JOIN_ROLE_ID = process.env.AUTO_JOIN_ROLE_ID || "1466504639682973940"
 // ✅ Base banner (1200x450)
 const WELCOME_BANNER_URL = process.env.WELCOME_BANNER_URL || "https://imgur.com/h1xLKDZ";
 const WELCOME_BANNER_PATH = process.env.WELCOME_BANNER_PATH || "";
-
-// Font
 const WELCOME_FONT_FAMILY = process.env.WELCOME_FONT_FAMILY || "Lexend";
 
-// Redis (opzionale)
 const REDIS_URL = process.env.REDIS_URL || "";
 
 // ✅ Emoji custom per titolo welcome
@@ -314,23 +316,9 @@ function sanitizeForChannelUsername(username) {
   return s || "utente";
 }
 
-function hasRole(memberOrInteraction, roleId) {
-  const member = memberOrInteraction?.member ?? memberOrInteraction;
-  return member?.roles?.cache?.has(roleId);
-}
-
 function isAdmin(memberOrInteraction) {
   const member = memberOrInteraction?.member ?? memberOrInteraction;
   return !!member?.permissions?.has?.(PermissionFlagsBits.Administrator);
-}
-
-async function notifyUserPrivate(msg, text) {
-  await msg.delete().catch(() => {});
-  const dmOk = await msg.author.send(text).then(() => true).catch(() => false);
-  if (!dmOk) {
-    const r = await msg.channel.send({ content: `<@${msg.author.id}> ${text}` }).catch(() => null);
-    if (r) setTimeout(() => r.delete().catch(() => {}), 5000).unref?.();
-  }
 }
 
 function canCloseTicketFromMember(member) {
@@ -338,7 +326,6 @@ function canCloseTicketFromMember(member) {
   if (member.permissions?.has?.(PermissionFlagsBits.Administrator)) return true;
   return member.roles?.cache?.has(TICKET_CLOSE_ROLE_ID);
 }
-
 function canCloseTicketFromInteraction(interaction) {
   return canCloseTicketFromMember(interaction?.member);
 }
@@ -347,32 +334,11 @@ function isTicketChannel(channel) {
   return channel?.type === ChannelType.GuildText && typeof channel.name === "string" && channel.name.includes("ticket-");
 }
 
-function resolveTicketParentId(guild) {
-  if (!TICKET_CATEGORY_ID) return null;
-  const ch = guild.channels.cache.get(TICKET_CATEGORY_ID);
-  if (!ch) return null;
-  if (ch.type !== ChannelType.GuildCategory) return null;
-  return ch.id;
-}
-
-function channelNameForTicket(ticketType, username) {
-  const u = sanitizeForChannelUsername(username);
-  const suf = crypto.randomBytes(2).toString("hex");
-  if (ticketType === "Braccio Armato") return `🔫・ticket-${u}-${suf}`;
-  if (ticketType === "Informativa") return `📄・ticket-${u}-${suf}`;
-  return `ticket-${u}-${suf}`;
-}
-
-function topicForTicket(ticketType, userId) {
-  return `**Categoria:** ${ticketType} | **Utente:** <@${userId}> | **Aperto:** ${new Date().toISOString()}`;
-}
-
 function extractUserIdFromTopic(topic) {
   if (!topic || typeof topic !== "string") return null;
   const m = topic.match(/<@(\d{17,20})>/);
   return m ? m[1] : null;
 }
-
 function extractCategoryFromTopic(topic) {
   if (!topic || typeof topic !== "string") return "Sconosciuta";
   const m = topic.match(/\*\*Categoria:\*\*\s*([^|]+)\s*\|/);
@@ -388,7 +354,37 @@ function formatRomeHHMM(date = new Date()) {
   }).format(date);
 }
 
-// ================== AUTO ROLE (robusto + debug) ==================
+function getTicketParentForType(ticketType) {
+  if (ticketType === "Informativa") return CATEGORY_INFORMATIVA_ID;
+  if (ticketType === "Generale") return CATEGORY_GENERALE_FAZ_ID;
+  if (ticketType === "Fazionati") return CATEGORY_GENERALE_FAZ_ID;
+  // Braccio Armato / Soldato
+  return CATEGORY_SOLDATO_BA_ID;
+}
+
+function channelNameForTicket(ticketType, username) {
+  const u = sanitizeForChannelUsername(username);
+  const suf = crypto.randomBytes(2).toString("hex");
+  if (ticketType === "Informativa") return `📄・ticket-${u}-${suf}`;
+  if (ticketType === "Generale") return `🎖️・ticket-${u}-${suf}`;
+  if (ticketType === "Fazionati") return `🛠️・ticket-${u}-${suf}`;
+  return `🔫・ticket-${u}-${suf}`; // Braccio Armato / Soldato
+}
+
+function topicForTicket(ticketType, userId) {
+  return `**Categoria:** ${ticketType} | **Utente:** <@${userId}> | **Aperto:** ${new Date().toISOString()}`;
+}
+
+function uniqueRoleIds(arr) {
+  return [...new Set(arr.filter(Boolean))];
+}
+
+function buildTicketManagerRoleIds() {
+  // chiesto: questi due + lo staff role che già avevi
+  return uniqueRoleIds([STAFF_ROLE_ID, TICKET_CLOSE_ROLE_ID, EXTRA_TICKET_MANAGER_ROLE_ID]);
+}
+
+// ================== AUTO ROLE (debug) ==================
 async function tryAssignAutoJoinRole(member, origin = "unknown") {
   if (!AUTO_JOIN_ROLE_ID) return;
 
@@ -407,15 +403,10 @@ async function tryAssignAutoJoinRole(member, origin = "unknown") {
   }
 
   const me = guild.members.me || (await guild.members.fetchMe().catch(() => null));
-  if (!me) {
-    const t = `❌ [AUTO-ROLE] Impossibile fetchare il bot member (${origin})`;
-    console.log(t);
-    await debugSend(guild, t);
-    return;
-  }
+  if (!me) return;
 
   if (role.managed) {
-    const t = `❌ [AUTO-ROLE] Ruolo "${role.name}" managed=true (integrazione) => non assegnabile. (${origin})`;
+    const t = `❌ [AUTO-ROLE] Ruolo "${role.name}" managed=true (integrazione) => non assegnabile.`;
     console.log(t);
     await debugSend(guild, t);
     return;
@@ -423,7 +414,7 @@ async function tryAssignAutoJoinRole(member, origin = "unknown") {
 
   if (!role.editable) {
     const t =
-      `❌ [AUTO-ROLE] Ruolo NON editable: "${role.name}" (${role.id}). (${origin})\n` +
+      `❌ [AUTO-ROLE] Ruolo NON editable: "${role.name}" (${role.id}).\n` +
       `Bot highest="${me.roles.highest?.name}" pos=${me.roles.highest?.position}\n` +
       `Target pos=${role.position}\n` +
       `Soluzione: sposta il ruolo del bot sopra "${role.name}" nei Ruoli.`;
@@ -434,32 +425,23 @@ async function tryAssignAutoJoinRole(member, origin = "unknown") {
 
   const hasAdmin = me.permissions.has(PermissionFlagsBits.Administrator);
   const hasManageRoles = me.permissions.has(PermissionFlagsBits.ManageRoles);
-  if (!hasAdmin && !hasManageRoles) {
-    const t = `❌ [AUTO-ROLE] Il bot non ha Administrator/ManageRoles. (${origin})`;
-    console.log(t);
-    await debugSend(guild, t);
-    return;
-  }
+  if (!hasAdmin && !hasManageRoles) return;
 
   if (m.roles.cache.has(role.id)) return;
 
   for (let i = 1; i <= 4; i++) {
     try {
-      await m.roles.add(role, `Auto-Role - Fam. Gotti`);
-      const t = `✅ [AUTO-ROLE] Assegnato "${role.name}" a ${userTag} (try ${i}/4)`;
-      console.log(t);
-      await debugSend(guild, t);
+      await m.roles.add(role, `Auto-ruolo ingresso (${origin})`);
       return;
     } catch (e) {
-      const code = e?.code ? ` code=${e.code}` : "";
-      const msg = e?.message ? ` msg=${e.message}` : "";
-      const t = `❌ [AUTO-ROLE] roles.add fallito (try ${i}/4) user=${userTag}${code}${msg} (${origin})`;
-      console.log(t);
-      await debugSend(guild, t);
       await sleep(1200);
       m = await guild.members.fetch(member.id).catch(() => m);
     }
   }
+
+  const t = `❌ [AUTO-ROLE] Fallito assegnare ruolo a ${userTag}. (Vedi gerarchia/permessi)`;
+  console.log(t);
+  await debugSend(guild, t);
 }
 
 // ================== WELCOME BANNER (Canvas) ==================
@@ -618,7 +600,6 @@ async function renderWelcomeBanner(member) {
   const base = await loadBaseBannerImage();
   if (base) {
     drawContain(ctx, base, 0, 0, BANNER_W, BANNER_H);
-
     const g = ctx.createLinearGradient(0, 0, 0, BANNER_H);
     g.addColorStop(0, "rgba(0,0,0,0.12)");
     g.addColorStop(0.55, "rgba(0,0,0,0.16)");
@@ -742,7 +723,7 @@ async function sendGoodbyeSimple(member) {
     .catch(() => {});
 }
 
-// ================== TICKET PANEL UI ==================
+// ================== TICKET PANEL UI (V2) ==================
 function buildTicketPanelComponents() {
   const hhmm = formatRomeHHMM(new Date());
 
@@ -750,8 +731,6 @@ function buildTicketPanelComponents() {
     { type: 10, content: `# <:icona_ticket:1467182266554908953> Famiglia Gotti – Ticket Fazione` },
     { type: 14, divider: false, spacing: 1 },
     { type: 10, content: "**Seleziona una delle Seguenti Opzioni in Base alla Desiderata:**" },
-    { type: 14, divider: false, spacing: 1 },
-    { type: 10, content: "- **🕒・Orario di Controllo Ticket**: 10:00 - 00:00" },
     { type: 14, divider: true, spacing: 2 },
   ];
 
@@ -762,9 +741,10 @@ function buildTicketPanelComponents() {
     {
       type: 1,
       components: [
-        { type: 2, style: 1, custom_id: "ticket_btn_braccio", label: "🔫・Ticket Braccio Armato" },
+        { type: 2, style: 1, custom_id: "ticket_btn_ba", label: "🔫・Braccio Armato / Soldato" },
         { type: 2, style: 4, custom_id: "ticket_btn_info", label: "📄・Ticket Informativa" },
-        { type: 2, style: 3, custom_id: "ticket_btn_wl", label: "🛠️・Ticket Fazionati", disabled: true },
+        { type: 2, style: 2, custom_id: "ticket_btn_gen", label: "🎖️・Ticket Generale" },
+        { type: 2, style: 3, custom_id: "ticket_btn_faz", label: "🛠️・Ticket Fazionati" },
       ],
     },
     { type: 14, divider: true, spacing: 2 },
@@ -838,7 +818,7 @@ async function upsertTicketPanel(channel) {
   }
 }
 
-// ================== TICKET WELCOME (nel ticket) ==================
+// ================== TICKET WELCOME (NO PIN) ==================
 function buildTicketWelcomeEmbed() {
   return new EmbedBuilder()
     .setTitle("Benvenuto nel Sistema Ticket della Famiglia Gotti <:icona_ticket:1467182266554908953>")
@@ -851,13 +831,32 @@ function buildCloseButtonRow() {
   return new ActionRowBuilder().addComponents(btn);
 }
 async function sendTicketWelcome(channel, guildName, userId) {
-  // ✅ NON viene più pinnato niente
   await channel.send({
     content: `Benvenuto <@${userId}> nel Sistema Ticket della **${guildName}**`,
     embeds: [buildTicketWelcomeEmbed()],
     components: [buildCloseButtonRow()],
     allowedMentions: { users: [userId], roles: [], repliedUser: false },
   });
+}
+
+// ================== BA/SOLDATO CHOOSER (V2) ==================
+function buildBaSoldatoChooserV2() {
+  const inner = [
+    { type: 10, content: `# <:icona_ticket:1467182266554908953> Seleziona la tua Categoria` },
+    { type: 14, divider: false, spacing: 1 },
+    { type: 10, content: "Scegli una delle due opzioni qui sotto per continuare." },
+    { type: 14, divider: true, spacing: 2 },
+    {
+      type: 1,
+      components: [
+        { type: 2, style: 1, custom_id: "ba_choose:Braccio Armato", label: "🔫・Braccio Armato" },
+        { type: 2, style: 3, custom_id: "ba_choose:Soldato", label: "🕵️‍♂️・Soldato" },
+      ],
+    },
+    { type: 14, divider: true, spacing: 2 },
+    { type: 10, content: "-# Seleziona una sola volta: il pannello verrà rimosso automaticamente." },
+  ];
+  return [{ type: 17, components: inner }];
 }
 
 // ================== TRANSCRIPTS ==================
@@ -1026,30 +1025,52 @@ async function createTicketChannel(interaction, ticketType) {
   const guild = interaction.guild;
   const user = interaction.user;
 
-  const parentId = resolveTicketParentId(guild);
+  const parentId = getTicketParentForType(ticketType);
   const desiredName = channelNameForTicket(ticketType, user.username);
   const topic = topicForTicket(ticketType, user.id);
+
+  const managerRoleIds = buildTicketManagerRoleIds();
+
+  const overwrites = [
+    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    {
+      id: user.id,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+    },
+    ...managerRoleIds.map((rid) => ({
+      id: rid,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+    })),
+  ];
 
   const channel = await guild.channels.create({
     name: desiredName,
     type: ChannelType.GuildText,
-    parent: parentId ?? undefined,
+    parent: parentId || undefined,
     topic,
-    permissionOverwrites: [
-      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-      { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-      { id: STAFF_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-    ],
+    permissionOverwrites: overwrites,
   });
 
-  sendTicketWelcome(channel, guild.name, user.id).catch(() => {});
+  await sendTicketWelcome(channel, guild.name, user.id).catch(() => {});
+
+  // Se ticket “Braccio Armato / Soldato”, manda il pannello scelta subito dopo
+  if (ticketType === "Braccio Armato") {
+    await channel
+      .send({
+        flags: MessageFlags.IsComponentsV2,
+        components: buildBaSoldatoChooserV2(),
+        allowedMentions: { parse: [] },
+      })
+      .catch(() => {});
+  }
+
   return { channel };
 }
 
 // ================== SLASH COMMANDS ==================
-const commands = [new SlashCommandBuilder().setName("ticketpanel").setDescription("Pannello Ticket - Fam. Gotti")].map((c) =>
-  c.toJSON()
-);
+const commands = [
+  new SlashCommandBuilder().setName("ticketpanel").setDescription("Invia/aggiorna il pannello ticket (senza duplicati)"),
+].map((c) => c.toJSON());
 
 async function registerCommandsSafe() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -1078,52 +1099,12 @@ function bindEventsOnce() {
     }
   });
 
-  client.on("messageCreate", async (msg) => {
-    try {
-      if (!msg.guild || msg.author.bot) return;
-      if (!msg.content.startsWith(PREFIX)) return;
-
-      const raw = msg.content.slice(PREFIX.length).trim();
-      const [cmdRaw, ...rest] = raw.split(/\s+/);
-      const cmd = (cmdRaw || "").toLowerCase();
-      const reason = rest.join(" ").trim();
-
-      const member = await msg.guild.members.fetch(msg.author.id).catch(() => null);
-      if (!member || !isAdmin(member)) {
-        await notifyUserPrivate(msg, "❌ Solo gli **Amministratori** possono usare i comandi del bot in chat.");
-        return;
-      }
-
-      if (cmd === "ticketpanel") {
-        if (TICKET_PANEL_CHANNEL_ID && msg.channel.id !== TICKET_PANEL_CHANNEL_ID) {
-          await notifyUserPrivate(msg, "❌ Non è possibile inviare/aggiornare il pannello ticket in questo canale.");
-          return;
-        }
-        await upsertTicketPanel(msg.channel);
-        return;
-      }
-
-      if (cmd === "chiudi") {
-        if (!isTicketChannel(msg.channel)) return;
-
-        await msg.reply("⏳ Chiusura ticket in corso...").catch(() => {});
-        await closeTicketCore({
-          guild: msg.guild,
-          channel: msg.channel,
-          closedById: msg.author.id,
-          reason: reason || "Chiuso tramite !chiudi",
-        });
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  });
-
   client.on("interactionCreate", async (interaction) => {
     try {
       const idem = await acquireGlobalLock(`ix:${interaction.id}`, 20_000);
       if (!idem.ok) return;
 
+      // /ticketpanel
       if (interaction.isChatInputCommand() && interaction.commandName === "ticketpanel") {
         if (!interaction.memberPermissions?.has?.(PermissionFlagsBits.Administrator)) {
           await interaction.reply({ content: "❌ Solo gli **Amministratori** possono usare questo comando.", flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -1140,6 +1121,7 @@ function bindEventsOnce() {
         return;
       }
 
+      // Download transcript
       if (interaction.isButton() && String(interaction.customId).startsWith("dl_tr:")) {
         const token = interaction.customId.split(":")[1] || "";
         const meta = transcriptIndex.get(token);
@@ -1159,6 +1141,7 @@ function bindEventsOnce() {
         return;
       }
 
+      // Modal close reason
       if (interaction.isModalSubmit() && String(interaction.customId).startsWith("ticket_close_reason:")) {
         const channelId = interaction.customId.split(":")[1] || "";
         if (!interaction.guild || !interaction.channel) return;
@@ -1188,20 +1171,59 @@ function bindEventsOnce() {
         return;
       }
 
-      // ✅ APERTURA TICKET: nessun blocco orario, nessun cooldown, nessun limite
-      if (interaction.isButton() && ["ticket_btn_braccio", "ticket_btn_info", "ticket_btn_wl"].includes(interaction.customId)) {
-        if (interaction.customId === "ticket_btn_wl") {
-          await interaction.reply({ content: "Prossimamente...", flags: MessageFlags.Ephemeral }).catch(() => {});
+      // Pulsanti apertura ticket (illimitati)
+      if (interaction.isButton() && ["ticket_btn_ba", "ticket_btn_info", "ticket_btn_gen", "ticket_btn_faz"].includes(interaction.customId)) {
+        await interaction.reply({ content: "✅ Ticket in creazione...", flags: MessageFlags.Ephemeral }).catch(() => {});
+        const type =
+          interaction.customId === "ticket_btn_ba"
+            ? "Braccio Armato"
+            : interaction.customId === "ticket_btn_info"
+              ? "Informativa"
+              : interaction.customId === "ticket_btn_gen"
+                ? "Generale"
+                : "Fazionati";
+
+        const res = await createTicketChannel(interaction, type);
+        await interaction.editReply({ content: `Ticket aperto: ${res.channel}` }).catch(() => {});
+        return;
+      }
+
+      // Pulsanti scelta BA/Soldato dentro al ticket
+      if (interaction.isButton() && String(interaction.customId).startsWith("ba_choose:")) {
+        if (!interaction.guild || !interaction.channel) return;
+        if (!isTicketChannel(interaction.channel)) {
+          await interaction.reply({ content: "❌ Questo pulsante è valido solo nei ticket.", flags: MessageFlags.Ephemeral }).catch(() => {});
           return;
         }
 
-        await interaction.reply({ content: "✅ Ticket in creazione...", flags: MessageFlags.Ephemeral }).catch(() => {});
-        const ticketType = interaction.customId === "ticket_btn_braccio" ? "Braccio Armato" : "Informativa";
+        const picked = interaction.customId.split(":")[1] || "Sconosciuto";
 
-        const res = await createTicketChannel(interaction, ticketType);
-        return interaction.editReply({ content: `Ticket aperto: ${res.channel}` }).catch(() => {});
+        // ACK rapido, poi pulizia
+        await interaction.deferUpdate().catch(() => {});
+
+        // elimina il pannello di selezione
+        await interaction.message.delete().catch(() => {});
+
+        // salva in topic la scelta (non sposta categoria perché entrambe stanno nella stessa)
+        const oldTopic = interaction.channel.topic || "";
+        const newTopic = oldTopic.includes("**SottoCategoria:**")
+          ? oldTopic.replace(/\*\*SottoCategoria:\*\*.*$/m, `**SottoCategoria:** ${picked}`)
+          : `${oldTopic} | **SottoCategoria:** ${picked}`;
+
+        await interaction.channel.setTopic(newTopic.slice(0, 1024)).catch(() => {});
+
+        // messaggio conferma richiesto
+        await interaction.channel
+          .send({
+            content: `<@${interaction.user.id}>: **Hai Selezionato la Categoria:** \`${picked}\``,
+            allowedMentions: { users: [interaction.user.id], roles: [], repliedUser: false },
+          })
+          .catch(() => {});
+
+        return;
       }
 
+      // Pulsante chiusura ticket
       if (interaction.isButton() && interaction.customId === "ticket_close_now") {
         if (!isTicketChannel(interaction.channel)) {
           await interaction.reply({ content: "Solo nei canali ticket.", flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -1212,6 +1234,7 @@ function bindEventsOnce() {
           return;
         }
         await interaction.showModal(buildCloseReasonModal(interaction.channel.id));
+        return;
       }
     } catch (err) {
       console.error(err);
@@ -1235,5 +1258,3 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
-
-
