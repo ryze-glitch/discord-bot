@@ -903,7 +903,7 @@ function buildTicketLogV2Components({ ticketName, openerId, closedById, category
   const inner = [
     { type: 10, content: `# <:icona_ticket:1467182266554908953> Famiglia Gotti – Log Ticket` },
     { type: 14, divider: false, spacing: 1 },
-    { type: 10, content: `**Ticket:** ${TICKET_TITLE_EMOJI} | \`${ticketName}\`` },
+    { type: 10, content: `**Ticket:** \`${ticketName}\`` },
     { type: 10, content: `**Aperto da:** ${openerId ? `<@${openerId}>` : "Sconosciuto"}` },
     { type: 10, content: `**Concluso da:** <@${closedById}>` },
     { type: 10, content: `**Categoria:** ${category || "Sconosciuta"}` },
@@ -1260,4 +1260,5 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
+
 
