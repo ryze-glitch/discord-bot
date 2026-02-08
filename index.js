@@ -367,7 +367,7 @@ function initialTicketChannelName(username) {
 }
 
 function topicForTicket(ticketType, userId) {
-  return `**Categoria:** ${ticketType} | **Utente:** <@${userId}> | **Aperto:** ${new Date().toISOString()}`;
+  return `**Categoria:** ${ticketType} | **Utente:** <@${userId}>`;
 }
 
 function uniqueRoleIds(arr) {
@@ -1260,3 +1260,4 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
+
