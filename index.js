@@ -527,11 +527,8 @@ function isWithinSupportHoursRome() {
 }
 
 const CLOSED_MESSAGE =
-  "Al Momento non è possibile Aprire Nuovi Ticket. Ti Invitiamo a riprovare durante i nostri **Orari di Supporto:**\n" +
-  "- Lunedì - Venerdì: 12:00 - 00:00\n" +
-  "- Sabato: 10:30 - 01:30\n" +
-  "- Domenica: 10:30 - 00:00\n\n" +
-  `**Per Aprire Ticket anche al di fuori degli Orari di Supporto Acquista ora l'@&${ALWAYS_OPEN_ROLE_ID} a 4,99€ per ottenere assistenza rapida senza tempi di Attesa per qualsiasi tipo di problema o richiesta!**`;
+  "Al Momento non è possibile Aprire Nuovi Ticket. Ti Invitiamo a riprovare durante i nostri **Orari di Controllo Ticket:**\n" +
+  "- Lunedì - Domenica: 09:00 - 00:00\n" +;
 
 // ================== WELCOME BANNER (Canvas) ==================
 const BANNER_W = 1200;
@@ -1362,5 +1359,6 @@ client.once("ready", async () => {
 
   await client.login(TOKEN);
 })();
+
 
 
